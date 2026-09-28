@@ -1,5 +1,4 @@
-# Finite-Sampling Graph Dynamics
-
+# Dynsample: Stochastic Dynamics and Graph Inference
 A Python research project for learning dynamic relationships between nodes from finite time-series observations, with explicit assumptions and reliability evaluation.
 
 The intended workflow is:

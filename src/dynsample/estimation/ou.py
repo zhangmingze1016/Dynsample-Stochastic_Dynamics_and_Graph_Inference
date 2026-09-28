@@ -1,7 +1,7 @@
 import numpy as np
-
 from dynsample.core.trajectory import Trajectory
 from dynsample.simulation.ou import ou_transition
+from scipy.optimize import OptimizeResult, minimize
 
 def ou_negative_log_likelihood(
         trajectory: Trajectory,
@@ -56,3 +56,127 @@ def ou_negative_log_likelihood(
         )
 
     return float(total)
+
+def _ou_objective(
+        parameters: np.ndarray,
+        trajectory: Trajectory,
+) -> float:
+    log_alpha, mu, log_sigma = parameters
+
+    alpha = float(np.exp(log_alpha))
+    sigma = float(np.exp(log_sigma))
+
+
+    return ou_negative_log_likelihood(
+        trajectory = trajectory,
+        mean_reversion = alpha,
+        long_run_mean = mu,
+        volatility = sigma,
+    )
+
+def _initial_ou_parameters(
+        trajectory: Trajectory,
+) -> tuple[float, float, float]:
+    if trajectory.values.shape[1:] != (1,1):
+        raise ValueError(
+            "trajectory must contain one node and one feature"
+        )
+
+    if trajectory.times.size < 2:
+        raise ValueError(
+            "trajectory must contain at least two time points"
+        )
+
+    times = trajectory.times
+    values = trajectory.values[:, 0, 0]
+
+    dt = np.diff(times)
+    increments = np.diff(values)
+    duration = times[-1] - times[0]
+
+    if not np.isfinite(duration) or duration <= 0.0:
+        raise ValueError("time span must be finite and positive")
+
+    if np.all(increments == 0.0):
+        raise ValueError(
+            "cannot initialize positive noise from a constant trajectory"
+        )
+
+    alpha = 1.0 / duration
+    mu = float(np.mean(values))
+
+    scaled_increments = increments / np.sqrt(dt)
+    sigma = float(np.sqrt(np.mean(scaled_increments**2)))
+
+    parameters = (float(alpha), mu, sigma)
+
+    if not np.all(np.isfinite(parameters)):
+        raise ValueError("initial parameter calculation produced non-finite values")
+
+    if alpha <= 0.0 or sigma <= 0.0:
+        raise ValueError("initial alpha and sigma must be positive")
+
+    return parameters
+
+
+def fit_ou(
+        trajectory: Trajectory,
+        initial_parameters: tuple[float, float, float] | None,
+        parameter_bounds: tuple[
+            tuple[float, float],
+            tuple[float, float],
+            tuple[float, float],
+        ],
+) -> OptimizeResult:
+    if initial_parameters is None:
+        initial_parameters = _initial_ou_parameters(trajectory)
+    initial = np.asarray(
+        initial_parameters,
+        dtype = np.float64,
+    )
+    
+    bounds = np.asarray(parameter_bounds, dtype = np.float64)
+
+    if initial.shape != (3,) or bounds.shape != (3, 2):
+            raise ValueError(
+                "provide three initial values and three bounds pairs"
+            )
+
+    if not np.all(np.isfinite(initial)) or not np.all(np.isfinite(bounds)):
+        raise ValueError("initial values and bounds must be finite")
+
+    if np.any(bounds[:, 0] >= bounds[:, 1]):
+        raise ValueError("each lower bound must be smaller than its upper bound")
+
+    if bounds[0, 0] <= 0.0 or bounds[2, 0] <= 0.0:
+        raise ValueError("alpha and sigma bounds must be positive")
+
+    if np.any(initial < bounds[:, 0]) or np.any(initial > bounds[:, 1]):
+        raise ValueError("initial values must lie within the bounds")
+
+    
+    initial_score = ou_negative_log_likelihood(
+        trajectory = trajectory,
+        mean_reversion = float(initial[0]),
+        long_run_mean = float(initial[1]),
+        volatility = float(initial[2]),
+    )
+
+    if not np.isfinite(initial_score):
+        raise ValueError("initial negative log-likelihood must be finite")
+
+    search_initial = initial.copy()
+    search_initial[[0, 2]] = np.log(initial[[0, 2]])
+
+    search_bounds = bounds.copy()
+    search_bounds[[0, 2], :] = np.log(bounds[[0, 2], :])
+
+    result = minimize(
+        fun = _ou_objective,
+        x0 = search_initial,
+        args = (trajectory,),
+        method = "L-BFGS-B",
+        bounds = search_bounds,
+    )
+
+    return result
