@@ -10,7 +10,7 @@ Node time series + timestamps
     -> Assess uncertainty, stability, and predictive value
 ```
 
-**Current status:** the repository implements core data structures, independent Brownian and Ornstein–Uhlenbeck (OU) simulation, and Brownian bridge sampling. Unknown graph estimation, dynamic graph inference, and the reliability workflow below are planned, not implemented.
+**Current status:** the repository implements core data structures, independent Brownian and Ornstein–Uhlenbeck (OU) simulation, Brownian bridge sampling, and scalar OU parameter fitting. Unknown graph estimation, dynamic graph inference, and the reliability workflow below are planned, not implemented.
 
 ## Objective and Scope
 
@@ -43,16 +43,17 @@ The project does not currently promise causal discovery, inference of human inte
 | `Graph` | Weighted adjacency, node count, row-sum degree, degree matrix, and `D - adjacency`. |
 | Brownian simulation | Independent node-feature increments with one shared scalar volatility; arbitrary strictly increasing requested times. |
 | OU simulation | Exact scalar transitions, single-step and trajectory simulation on irregular times; shared scalar parameters and independent node-feature noise. |
+| OU estimation | Conditional Gaussian negative log-likelihood and bounded numerical fitting for complete scalar trajectories; optional automatic initialization. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between two supplied endpoints. |
 | Validation | Unit tests and empirical checks of Brownian bridge means, variances, and multi-point covariance. |
 
-`Graph` stores supplied relationships; it does not learn them. An observation mask can represent missing entries, but the current bridge functions do not perform general masked-data inference. The `estimation`, `metrics`, and `sampling` packages are placeholders.
+`Graph` stores supplied relationships; it does not learn them. An observation mask can represent missing entries, but the current bridge functions do not perform general masked-data inference. The `estimation` package currently supports scalar OU fitting; `metrics` and `sampling` remain placeholders.
 
 Remaining correctness and packaging verification work is listed under [Immediate Development Work](#immediate-development-work). Passing the existing tests does not resolve those gaps.
 
 ## Local Setup and Working Example
 
-Run these commands from the repository root:
+Use Python 3.10 or newer (the development environment has been verified with Python 3.12). Run these commands from the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -97,9 +98,41 @@ After installation, run:
 python -m pytest -q
 python experiments/experiment_brownian_bridge.py
 python experiments/experiment_ou.py
+python experiments/experiment_ou_estimation.py
 ```
 
 The Brownian bridge experiment prints the bridge construction and displays a plot. The OU experiment uses irregular sampling times and displays a sampled trajectory, its conditional mean, and pointwise 95% conditional intervals given the initial state and known parameters. These intervals describe process noise, not parameter-estimation uncertainty or simultaneous path coverage. Lines between sampled states are display connections, not reconstructed intermediate paths. Experiment entry points and optional verbose output remain cleanup tasks.
+
+## Scalar OU Fitting and Experiment
+
+The current estimator assumes a complete trajectory of shape `(T, 1, 1)`, exact observations without measurement noise, and constant scalar OU parameters. It conditions on the first observation and supports unequal time intervals. It does not infer inter-node relationships or reconstruct missing states.
+
+| Function in `dynsample.estimation.ou` | Purpose |
+| --- | --- |
+| `ou_negative_log_likelihood` | Score supplied positive `mean_reversion` and `volatility`, with a finite `long_run_mean`, against the observed transitions. |
+| `fit_ou` | Minimize that score using L-BFGS-B in `(log(alpha), mu, log(sigma))` coordinates. |
+| `_initial_ou_parameters` | Internal heuristic starting values; not a parameter estimate or a public API guarantee. |
+| `_ou_objective` | Internal conversion from optimizer coordinates to model parameters. |
+
+`fit_ou` currently requires `trajectory`, `initial_parameters`, and `parameter_bounds`. Pass `initial_parameters=None` to generate a starting guess automatically. Bounds are three finite `(lower, upper)` pairs in `(alpha, mu, sigma)` order; alpha and sigma bounds must be positive. Automatic starts must lie within the supplied bounds. A constant trajectory is rejected by the initializer. Optional bounds, adaptive search, and automatic multiple starts are not implemented yet.
+
+The returned SciPy `OptimizeResult` contains:
+
+- `x`: optimizer coordinates, **not** physical OU parameters; recover alpha with `exp(x[0])`, mu with `x[1]`, and sigma with `exp(x[2])`;
+- `fun`: final conditional negative log-likelihood;
+- `success` and `message`: numerical stopping status, not guarantees of a global optimum or accurate parameter recovery.
+
+Run `python experiments/experiment_ou_estimation.py` after installation. The experiment generates 1,001 observations over 100 time units with alternating intervals of 0.05 and 0.15. It reports true, initial, and fitted parameters; initial and final scores; optimizer status; and proximity to its explicitly supplied search bounds.
+
+The figure has three panels:
+
+1. Observations and fitted one-step conditional means, each using the previous observed state.
+2. In-sample standardized residuals: observation minus its fitted one-step mean, divided by its transition standard deviation.
+3. Five new trajectories under fixed fitted parameters, plus the conditional mean given only the initial state.
+
+Close agreement of one-step means with densely sampled observations is not a long-horizon forecast validation. Residual variance near one is partly enforced by fitting the noise scale and is not independent evidence of model adequacy. New simulated paths are not reconstructions of the original path and do not include parameter uncertainty.
+
+Tests include a hand-calculated irregular-time likelihood, invalid inputs, coordinate conversion, automatic initialization, and comparison with an independent regular-grid conditional MLE obtained through AR(1) least squares. Repeated-seed recovery experiments, held-out prediction checks, and sensitivity to search settings remain future validation work. R1 graph estimation is not yet complete.
 
 ## State, Graph, and Dynamical Conventions
 
@@ -195,7 +228,7 @@ c_\Delta=\mu(1-F_\Delta),\qquad
 q_\Delta=\frac{\sigma^2}{2\alpha}(1-e^{-2\alpha\Delta}).
 ```
 
-`ou_step` samples the next state and `simulate_ou` returns a trajectory including the initial state. Each step uses its actual elapsed time. Zero mean reversion reduces to Brownian motion; zero volatility gives deterministic evolution. This is forward simulation with known parameters, not OU bridge reconstruction, parameter fitting, or graph inference.
+`ou_step` samples the next state and `simulate_ou` returns a trajectory including the initial state. Each step uses its actual elapsed time. Zero mean reversion reduces to Brownian motion; zero volatility gives deterministic evolution. This is forward simulation with known parameters, not OU bridge reconstruction or graph inference. Scalar parameter fitting is implemented separately in `estimation/ou.py`.
 
 ### Probability, Bayesian Inference, and MCMC
 
@@ -300,7 +333,7 @@ Completed groundwork includes repaired trajectory test collection, exact initial
 | --- | --- | --- |
 | P0 | Fix graph/drift semantics before estimation | Document source/target conversion, self-dynamics, feature blocks, signed weights, and model-specific graph constraints. |
 | P0 | Verify packaging | Verify editable installation and examples in a clean environment; package configuration and dependency extras are implemented. |
-| P0 | Complete OU validation | Add committed trajectory tests for irregular times and single-time input, transition moment/composition checks, and invalid-input cases. Current OU tests cover single-step behavior. |
+| P0 | Extend OU validation and fitting usability | Existing tests cover basic trajectories, scalar likelihood and fitting. Add repeated-seed recovery and held-out diagnostics; implement optional bounds and robust search handling. Preserve transition moment/composition checks as further validation work. |
 | P1 | Define remaining data contracts | Specify zero-volatility bridge behavior, empty inputs, and array copying/sharing rules. |
 | P1 | Clean up the bridge experiment | Add an execution entry point, optional verbose tracing, and separate plotting from reusable computation. |
 | P2 | Improve bridge queue handling | Replace front-removal from a list with a queue; profile other searches before optimizing and preserve joint covariance. |
@@ -383,12 +416,13 @@ src/dynsample/
     simulation/ou.py            # Exact independent scalar OU simulation
     inference/reconstruction/
         brownian_bridge.py      # Implemented conditional sampling
-    estimation/                 # Placeholder
+    estimation/ou.py            # Scalar OU likelihood, initialization, and fitting
     metrics/                    # Placeholder
     sampling/                   # Placeholder
 experiments/
     experiment_brownian_bridge.py
     experiment_ou.py
+    experiment_ou_estimation.py
 tests/
 requirements.txt
 pyproject.toml                  # Package metadata and dependency extras
@@ -405,6 +439,8 @@ Extract shared transition and estimation interfaces when working implementations
 - [x] Brownian bridge demonstration.
 - [x] Independent scalar OU transitions and trajectory simulation on irregular times.
 - [x] OU visualization with conditional mean and pointwise state intervals.
+- [x] Scalar OU conditional likelihood, bounded fitting, and automatic starting values.
+- [x] OU estimation experiment with in-sample diagnostics and fitted-model simulations.
 - [x] Core finite-value validation, repaired trajectory tests, and package configuration.
 - [ ] Remaining correctness checks and clean-environment installation verification listed above.
 - [ ] Known-structure linear-SDE simulation and parameter-estimation benchmark.
