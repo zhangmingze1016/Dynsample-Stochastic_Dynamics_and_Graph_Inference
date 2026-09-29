@@ -6,6 +6,9 @@ from dynsample.estimation.ou import _initial_ou_parameters
 from dynsample.core.state import State
 from dynsample.simulation.ou import simulate_ou
 from dynsample.estimation.ou import fit_ou, _initial_ou_parameters
+from dynsample.estimation.ou import _profile_ou_mu, _profile_ou_sigma
+from dynsample.estimation.ou import _profile_ou_negative_log_likelihood
+from scipy.optimize import minimize, minimize_scalar
 
 def test_ou_likelihood_irregular_times() -> None:
     trajectory = Trajectory(
@@ -212,3 +215,190 @@ def test_fit_ou_with_automatic_initial_parameters() -> None:
     assert np.isfinite(automatic.fun)
     np.testing.assert_allclose(automatic.x, explicit.x)
     np.testing.assert_allclose(automatic.fun, explicit.fun)
+
+
+@pytest.mark.parametrize(
+    "times, expected",
+    [
+        ([0.0, 1.0, 2.0], 9.5),
+        ([0.0, 1.0, 3.0], 141.0 / 14.0),
+    ],
+)
+def test_profile_ou_mu_matches_hand_calculation(times, expected) -> None:
+    trajectory = Trajectory(
+        times=np.array(times),
+        values=np.array([14.0, 13.0, 10.0])[:, None, None],
+    )
+    original_times = trajectory.times.copy()
+    original_values = trajectory.values.copy()
+
+    actual = _profile_ou_mu(trajectory, np.log(2.0))
+
+    # Regular grid: B/A = 9.5. Irregular grid: B/A = 18.8 / (28/15).
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+    np.testing.assert_array_equal(trajectory.times, original_times)
+    np.testing.assert_array_equal(trajectory.values, original_values)
+
+
+@pytest.mark.parametrize("sigma", [0.4, 2.0])
+def test_profile_ou_mu_minimizes_existing_likelihood(sigma) -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.07, 0.4, 1.8, 2.0, 4.5]),
+        values=np.array([-3.0, -2.7, -3.4, -1.0, -1.3, -2.0])[:, None, None],
+    )
+    alpha = 0.8
+    actual = _profile_ou_mu(trajectory, alpha)
+
+    # Independently minimize the existing likelihood over mu alone.
+    def objective(mu):
+        return ou_negative_log_likelihood(trajectory, alpha, mu, sigma)
+
+    reference = minimize_scalar(
+        objective, bounds=(-20.0, 20.0), method="bounded",
+        options={"xatol": 1e-10},
+    )
+
+    assert reference.success
+    np.testing.assert_allclose(actual, reference.x, rtol=0.0, atol=1e-6)
+    assert objective(actual) < objective(actual - 0.5)
+    assert objective(actual) < objective(actual + 0.5)
+
+
+@pytest.mark.parametrize("alpha", [0.0, -0.5, np.nan, np.inf, -np.inf])
+def test_profile_ou_mu_rejects_invalid_alpha(alpha) -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.array([14.0, 13.0])[:, None, None],
+    )
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        _profile_ou_mu(trajectory, alpha)
+
+
+@pytest.mark.parametrize("shape", [(1, 1, 1), (3, 2, 1), (3, 1, 2)])
+def test_profile_ou_mu_rejects_unsupported_trajectory(shape) -> None:
+    trajectory = Trajectory(
+        times=np.arange(shape[0], dtype=float),
+        values=np.zeros(shape),
+    )
+
+    with pytest.raises(ValueError):
+        _profile_ou_mu(trajectory, 0.7)
+
+
+@pytest.mark.parametrize(
+    "times, variance_factor",
+    [
+        ([0.0, 1.0, 2.0], 25.0 / 6.0),
+        ([0.0, 1.0, 3.0], 27.0 / 14.0),
+    ],
+)
+def test_profile_ou_sigma_matches_hand_calculation(times, variance_factor) -> None:
+    trajectory = Trajectory(
+        times=np.array(times),
+        values=np.array([14.0, 13.0, 10.0])[:, None, None],
+    )
+    original_times = trajectory.times.copy()
+    original_values = trajectory.values.copy()
+
+    actual = _profile_ou_sigma(trajectory, np.log(2.0))
+
+    # Hand-derived variance: factor * log(2); the function must return sigma.
+    expected = np.sqrt(variance_factor * np.log(2.0))
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+    np.testing.assert_array_equal(trajectory.times, original_times)
+    np.testing.assert_array_equal(trajectory.values, original_values)
+
+
+def test_profile_ou_sigma_minimizes_existing_likelihood() -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.07, 0.4, 1.8, 2.0, 4.5]),
+        values=np.array([-3.0, -2.7, -3.4, -1.0, -1.3, -2.0])[:, None, None],
+    )
+    alpha = 0.8
+    mu = _profile_ou_mu(trajectory, alpha)
+    actual = _profile_ou_sigma(trajectory, alpha)
+
+    # Optimize the existing likelihood independently in log(sigma).
+    def objective(log_sigma):
+        return ou_negative_log_likelihood(
+            trajectory, alpha, mu, float(np.exp(log_sigma))
+        )
+
+    reference = minimize_scalar(
+        objective, bounds=(-10.0, 10.0), method="bounded",
+        options={"xatol": 1e-10},
+    )
+
+    assert reference.success
+    np.testing.assert_allclose(actual, np.exp(reference.x), rtol=1e-6)
+    assert objective(np.log(actual)) < objective(np.log(actual * 0.5))
+    assert objective(np.log(actual)) < objective(np.log(actual * 2.0))
+
+
+def test_profile_ou_sigma_rejects_zero_residual_variance() -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.3, 2.0]),
+        values=np.zeros((3, 1, 1)),
+    )
+
+    with pytest.raises(ValueError, match="zero residual variance"):
+        _profile_ou_sigma(trajectory, 0.7)
+
+
+@pytest.mark.parametrize(
+    "times, q1, q2",
+    [
+        ([0.0, 1.0, 2.0], 25.0 / 16.0, 25.0 / 16.0),
+        ([0.0, 1.0, 3.0], 81.0 / 112.0, 405.0 / 448.0),
+    ],
+)
+def test_profile_ou_likelihood_matches_hand_calculation(times, q1, q2) -> None:
+    trajectory = Trajectory(
+        times=np.array(times),
+        values=np.array([14.0, 13.0, 10.0])[:, None, None],
+    )
+
+    actual = _profile_ou_negative_log_likelihood(trajectory, np.log(2.0))
+
+    # Hand-derived fitted transition variances; standardized squares sum to n=2.
+    expected = 0.5 * (
+        np.log(2.0 * np.pi * q1) + np.log(2.0 * np.pi * q2) + 2.0
+    )
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+
+
+@pytest.mark.parametrize("alpha", [0.1, 0.8, 3.0])
+def test_profile_ou_likelihood_matches_joint_nuisance_optimization(alpha) -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.07, 0.4, 1.8, 2.0, 4.5]),
+        values=np.array([-3.0, -2.7, -3.4, -1.0, -1.3, -2.0])[:, None, None],
+    )
+
+    # Independently search mu and log(sigma), keeping alpha fixed.
+    def objective(parameters):
+        mu, log_sigma = parameters
+        return ou_negative_log_likelihood(
+            trajectory, alpha, float(mu), float(np.exp(log_sigma))
+        )
+
+    reference = minimize(
+        objective,
+        x0=np.array([-2.0, 0.0]),
+        method="Nelder-Mead",
+        options={"xatol": 1e-9, "fatol": 1e-10, "maxiter": 2000},
+    )
+    actual = _profile_ou_negative_log_likelihood(trajectory, alpha)
+
+    assert reference.success, reference.message
+    np.testing.assert_allclose(actual, reference.fun, rtol=0.0, atol=1e-8)
+
+
+def test_profile_ou_likelihood_rejects_zero_residual_variance() -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.3, 2.0]),
+        values=np.zeros((3, 1, 1)),
+    )
+
+    with pytest.raises(ValueError, match="zero residual variance"):
+        _profile_ou_negative_log_likelihood(trajectory, 0.7)

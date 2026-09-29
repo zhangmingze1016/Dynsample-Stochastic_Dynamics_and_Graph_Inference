@@ -43,7 +43,7 @@ The project does not currently promise causal discovery, inference of human inte
 | `Graph` | Weighted adjacency, node count, row-sum degree, degree matrix, and `D - adjacency`. |
 | Brownian simulation | Independent node-feature increments with one shared scalar volatility; arbitrary strictly increasing requested times. |
 | OU simulation | Exact scalar transitions, single-step and trajectory simulation on irregular times; shared scalar parameters and independent node-feature noise. |
-| OU estimation | Conditional Gaussian negative log-likelihood and bounded numerical fitting for complete scalar trajectories; optional automatic initialization. |
+| OU estimation | Conditional Gaussian likelihood, bounded joint fitting with automatic initialization, and scalar profile fitting with supplied alpha bounds. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between two supplied endpoints. |
 | Validation | Unit tests and empirical checks of Brownian bridge means, variances, and multi-point covariance. |
 
@@ -111,12 +111,13 @@ The current estimator assumes a complete trajectory of shape `(T, 1, 1)`, exact 
 | --- | --- |
 | `ou_negative_log_likelihood` | Score supplied positive `mean_reversion` and `volatility`, with a finite `long_run_mean`, against the observed transitions. |
 | `fit_ou` | Minimize that score using L-BFGS-B in `(log(alpha), mu, log(sigma))` coordinates. |
+| `fit_ou_profile` | Search over `log(alpha)` within supplied alpha bounds, analytically optimizing mu and sigma for each candidate alpha. |
 | `_initial_ou_parameters` | Internal heuristic starting values; not a parameter estimate or a public API guarantee. |
 | `_ou_objective` | Internal conversion from optimizer coordinates to model parameters. |
 
 `fit_ou` currently requires `trajectory`, `initial_parameters`, and `parameter_bounds`. Pass `initial_parameters=None` to generate a starting guess automatically. Bounds are three finite `(lower, upper)` pairs in `(alpha, mu, sigma)` order; alpha and sigma bounds must be positive. Automatic starts must lie within the supplied bounds. A constant trajectory is rejected by the initializer. Optional bounds, adaptive search, and automatic multiple starts are not implemented yet.
 
-The returned SciPy `OptimizeResult` contains:
+The SciPy `OptimizeResult` returned by `fit_ou` contains:
 
 - `x`: optimizer coordinates, **not** physical OU parameters; recover alpha with `exp(x[0])`, mu with `x[1]`, and sigma with `exp(x[2])`;
 - `fun`: final conditional negative log-likelihood;
@@ -133,6 +134,34 @@ The figure has three panels:
 Close agreement of one-step means with densely sampled observations is not a long-horizon forecast validation. Residual variance near one is partly enforced by fitting the noise scale and is not independent evidence of model adequacy. New simulated paths are not reconstructions of the original path and do not include parameter uncertainty.
 
 Tests include a hand-calculated irregular-time likelihood, invalid inputs, coordinate conversion, automatic initialization, and comparison with an independent regular-grid conditional MLE obtained through AR(1) least squares. Repeated-seed recovery experiments, held-out prediction checks, and sensitivity to search settings remain future validation work. R1 graph estimation is not yet complete.
+
+### Profile likelihood fitting
+
+For fixed positive alpha, the internal helpers `_profile_ou_mu` and `_profile_ou_sigma` calculate the conditional maximum-likelihood mu and sigma. `_profile_ou_negative_log_likelihood` scores those parameters. This eliminates two numerical search dimensions; it does not change the conditional likelihood or add Bayesian inference.
+
+```python
+from dynsample.estimation.ou import fit_ou_profile
+
+# trajectory is an existing complete scalar Trajectory.
+result = fit_ou_profile(trajectory, alpha_bounds=(0.001, 5.0))
+print(result.mean_reversion, result.long_run_mean, result.volatility)
+print(result.fun)
+```
+
+The bounds above are an example, not universal defaults. `alpha_bounds` is required and must contain two finite values satisfying `0 < lower < upper`. No initial parameters or mu/sigma bounds are required. Zero residual variance is rejected because there is no positive-volatility interior maximum in that case.
+
+Unlike `fit_ou`, this result's `x` is the **physical scalar alpha**. `log_alpha` retains its search coordinate; `mean_reversion`, `long_run_mean`, and `volatility` expose all three physical parameters. `fun` is the conditional negative log-likelihood and `alpha_bounds` records the supplied range. Failed or non-finite optimization results raise an error.
+
+```bash
+python -m pytest tests/test_ou_profile_fit.py tests/test_ou_estimation.py -q
+python -m experiments.experiment_ou_profile
+# Save the figure without opening a window:
+python -m experiments.experiment_ou_profile --no-show --save /tmp/ou_profile.png
+```
+
+The profile experiment compares joint and profile fitting on the same irregularly sampled trajectory. It displays the observations and a log-alpha profile score curve, with the true and fitted alpha marked. In the seed-42 example, both methods return approximately `(0.8646, 9.7985, 1.4937)` with NLL `554.53474842`. Agreement verifies this example, not universal parameter accuracy. The joint method additionally constrains mu and sigma; agreement is not expected when those constraints exclude the profile optimum.
+
+Validation includes hand-derived regular and irregular profile scores, independent numerical optimization of the nuisance parameters, and an independent AR(1) conditional-MLE reference for the complete fit. A plotted finite grid and successful bounded optimization do not prove global optimality. Automatic range selection, boundary and flat-profile diagnostics, and calibrated parameter intervals remain unimplemented. The experiment does not perform missing-value reconstruction or held-out forecasting.
 
 ## State, Graph, and Dynamical Conventions
 
@@ -333,7 +362,7 @@ Completed groundwork includes repaired trajectory test collection, exact initial
 | --- | --- | --- |
 | P0 | Fix graph/drift semantics before estimation | Document source/target conversion, self-dynamics, feature blocks, signed weights, and model-specific graph constraints. |
 | P0 | Verify packaging | Verify editable installation and examples in a clean environment; package configuration and dependency extras are implemented. |
-| P0 | Extend OU validation and fitting usability | Existing tests cover basic trajectories, scalar likelihood and fitting. Add repeated-seed recovery and held-out diagnostics; implement optional bounds and robust search handling. Preserve transition moment/composition checks as further validation work. |
+| P0 | Extend OU validation and fitting usability | Joint and profile fitting have analytical-reference tests. Add boundary and flat-profile diagnostics before automatic range selection; add repeated-seed recovery and held-out diagnostics. Preserve transition moment/composition checks as further validation work. |
 | P1 | Define remaining data contracts | Specify zero-volatility bridge behavior, empty inputs, and array copying/sharing rules. |
 | P1 | Clean up the bridge experiment | Add an execution entry point, optional verbose tracing, and separate plotting from reusable computation. |
 | P2 | Improve bridge queue handling | Replace front-removal from a list with a queue; profile other searches before optimizing and preserve joint covariance. |
@@ -423,6 +452,7 @@ experiments/
     experiment_brownian_bridge.py
     experiment_ou.py
     experiment_ou_estimation.py
+    experiment_ou_profile.py    # Joint/profile comparison and alpha score curve
 tests/
 requirements.txt
 pyproject.toml                  # Package metadata and dependency extras
@@ -441,6 +471,7 @@ Extract shared transition and estimation interfaces when working implementations
 - [x] OU visualization with conditional mean and pointwise state intervals.
 - [x] Scalar OU conditional likelihood, bounded fitting, and automatic starting values.
 - [x] OU estimation experiment with in-sample diagnostics and fitted-model simulations.
+- [x] Scalar OU profile fitting with supplied alpha bounds, analytical-reference tests, and a profile-curve experiment.
 - [x] Core finite-value validation, repaired trajectory tests, and package configuration.
 - [ ] Remaining correctness checks and clean-environment installation verification listed above.
 - [ ] Known-structure linear-SDE simulation and parameter-estimation benchmark.

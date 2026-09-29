@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "finite-sampling-graph-dynamics"
+name = "Stochastic_Dynamics_and_Graph_Inference"
 version = "0.1.0"
 description = "Stochastic dynamics and dynamic relationship inference research tools"
 readme = "README.md"
