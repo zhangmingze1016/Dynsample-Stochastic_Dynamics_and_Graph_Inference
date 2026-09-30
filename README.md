@@ -10,7 +10,7 @@ Node time series + timestamps
     -> Assess uncertainty, stability, and predictive value
 ```
 
-**Current status:** the repository implements core data structures, independent Brownian and Ornstein–Uhlenbeck (OU) simulation, Brownian bridge sampling, and scalar OU parameter fitting. Unknown graph estimation, dynamic graph inference, and the reliability workflow below are planned, not implemented.
+**Current status:** the repository implements core data structures, independent Brownian and Ornstein–Uhlenbeck (OU) simulation, Brownian bridge sampling, scalar Brownian drift/volatility estimation, and scalar OU parameter fitting with profile-boundary diagnostics. Unknown graph estimation, dynamic graph inference, and the reliability workflow below are planned, not implemented.
 
 ## Objective and Scope
 
@@ -43,11 +43,12 @@ The project does not currently promise causal discovery, inference of human inte
 | `Graph` | Weighted adjacency, node count, row-sum degree, degree matrix, and `D - adjacency`. |
 | Brownian simulation | Independent node-feature increments with one shared scalar volatility; arbitrary strictly increasing requested times. |
 | OU simulation | Exact scalar transitions, single-step and trajectory simulation on irregular times; shared scalar parameters and independent node-feature noise. |
-| OU estimation | Conditional Gaussian likelihood, bounded joint fitting with automatic initialization, and scalar profile fitting with supplied alpha bounds. |
+| Brownian estimation | Closed-form conditional maximum-likelihood drift and volatility estimates for a complete scalar trajectory on irregular times. |
+| OU estimation | Conditional Gaussian likelihood, bounded joint fitting with automatic initialization, and scalar profile fitting with supplied alpha bounds and boundary-proximity flags. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between two supplied endpoints. |
 | Validation | Unit tests and empirical checks of Brownian bridge means, variances, and multi-point covariance. |
 
-`Graph` stores supplied relationships; it does not learn them. An observation mask can represent missing entries, but the current bridge functions do not perform general masked-data inference. The `estimation` package currently supports scalar OU fitting; `metrics` and `sampling` remain placeholders.
+`Graph` stores supplied relationships; it does not learn them. An observation mask can represent missing entries, but the current bridge functions do not perform general masked-data inference. The `estimation` package currently supports scalar Brownian drift/volatility estimation and OU fitting; `metrics` and `sampling` remain placeholders.
 
 Remaining correctness and packaging verification work is listed under [Immediate Development Work](#immediate-development-work). Passing the existing tests does not resolve those gaps.
 
@@ -99,9 +100,42 @@ python -m pytest -q
 python experiments/experiment_brownian_bridge.py
 python experiments/experiment_ou.py
 python experiments/experiment_ou_estimation.py
+python -m experiments.experiment_ou_profile
 ```
 
 The Brownian bridge experiment prints the bridge construction and displays a plot. The OU experiment uses irregular sampling times and displays a sampled trajectory, its conditional mean, and pointwise 95% conditional intervals given the initial state and known parameters. These intervals describe process noise, not parameter-estimation uncertainty or simultaneous path coverage. Lines between sampled states are display connections, not reconstructed intermediate paths. Experiment entry points and optional verbose output remain cleanup tasks.
+
+## Scalar Brownian Drift Estimation
+
+`fit_brownian_drift` in `dynsample.estimation.brownian` fits the model `dX = b dt + sigma dW` by closed-form conditional maximum likelihood. It assumes complete, exact scalar observations of shape `(T, 1, 1)`, constant drift and volatility, and at least three time points. Unequal time intervals are supported; the likelihood conditions on the initial observation.
+
+```python
+import numpy as np
+
+from dynsample.core.trajectory import Trajectory
+from dynsample.estimation.brownian import fit_brownian_drift
+
+trajectory = Trajectory(
+    times=np.array([2.0, 3.0, 5.0]),
+    values=np.array([1.0, 4.0, 4.0])[:, None, None],
+)
+result = fit_brownian_drift(trajectory)
+print(result.drift)       # 1.0
+print(result.volatility)  # 1.7320508075688772
+print(result.fun)         # Conditional negative log-likelihood
+```
+
+For `n = T - 1` increments, the estimates are:
+
+```math
+\widehat b = \frac{x_{T-1}-x_0}{t_{T-1}-t_0},\qquad
+\widehat\sigma^2 = \frac{1}{n}\sum_{k=1}^{n}
+\frac{(x_k-x_{k-1}-\widehat b\,\Delta t_k)^2}{\Delta t_k}.
+```
+
+The returned SciPy `OptimizeResult` exposes `drift`, `volatility`, `x = [drift, volatility]` in physical units, and `fun`. Its `success=True` indicates completion of the closed-form calculation, not an iterative optimization or a guarantee of parameter accuracy. The variance estimate uses the maximum-likelihood denominator `n`, without a degrees-of-freedom correction. Zero residual variance is rejected because it has no positive-volatility interior maximum.
+
+This estimator does not add a drift argument to `simulate_brownian`, which still simulates zero-drift Brownian motion. It does not infer graphs or provide parameter intervals. Tests compare regular and irregular examples with hand calculations and an independent Gaussian-density optimization, and check rejected degenerate inputs.
 
 ## Scalar OU Fitting and Experiment
 
@@ -152,6 +186,17 @@ The bounds above are an example, not universal defaults. `alpha_bounds` is requi
 
 Unlike `fit_ou`, this result's `x` is the **physical scalar alpha**. `log_alpha` retains its search coordinate; `mean_reversion`, `long_run_mean`, and `volatility` expose all three physical parameters. `fun` is the conditional negative log-likelihood and `alpha_bounds` records the supplied range. Failed or non-finite optimization results raise an error.
 
+The profile result also reports proximity to the supplied search boundaries:
+
+| Field | Meaning |
+| --- | --- |
+| `alpha_search_position` | `(log_alpha - log(lower)) / (log(upper) - log(lower))`; position within the **log-alpha** range. |
+| `boundary_fraction` | Fixed threshold of `0.01` (1% of the log-alpha range). |
+| `near_lower_bound` | True when `alpha_search_position <= 0.01`. |
+| `near_upper_bound` | True when `alpha_search_position >= 0.99`. |
+
+These flags describe search-range proximity. They do not detect a flat profile, establish identifiability, or provide confidence intervals. A successful fit can still trigger a boundary flag; inspect the profile and sensitivity to scientifically reasonable alternative bounds. The fitter does not automatically expand its range.
+
 ```bash
 python -m pytest tests/test_ou_profile_fit.py tests/test_ou_estimation.py -q
 python -m experiments.experiment_ou_profile
@@ -159,9 +204,9 @@ python -m experiments.experiment_ou_profile
 python -m experiments.experiment_ou_profile --no-show --save /tmp/ou_profile.png
 ```
 
-The profile experiment compares joint and profile fitting on the same irregularly sampled trajectory. It displays the observations and a log-alpha profile score curve, with the true and fitted alpha marked. In the seed-42 example, both methods return approximately `(0.8646, 9.7985, 1.4937)` with NLL `554.53474842`. Agreement verifies this example, not universal parameter accuracy. The joint method additionally constrains mu and sigma; agreement is not expected when those constraints exclude the profile optimum.
+The profile experiment first reports fits and boundary flags for alpha ranges `(0.01, 0.3)`, `(0.01, 5.0)`, and `(0.001, 10.0)`, illustrating a restrictive upper bound and sensitivity to wider ranges. It then compares joint and profile fitting on the same irregularly sampled trajectory using `(0.001, 5.0)`. It displays the observations and a log-alpha profile score curve, with the true and fitted alpha marked. In the seed-42 example, both methods return approximately `(0.8646, 9.7985, 1.4937)` with NLL `554.53474842`. Agreement verifies this example, not universal parameter accuracy. The joint method additionally constrains mu and sigma; agreement is not expected when those constraints exclude the profile optimum.
 
-Validation includes hand-derived regular and irregular profile scores, independent numerical optimization of the nuisance parameters, and an independent AR(1) conditional-MLE reference for the complete fit. A plotted finite grid and successful bounded optimization do not prove global optimality. Automatic range selection, boundary and flat-profile diagnostics, and calibrated parameter intervals remain unimplemented. The experiment does not perform missing-value reconstruction or held-out forecasting.
+Validation includes hand-derived regular and irregular profile scores, independent numerical optimization of the nuisance parameters, and an independent AR(1) conditional-MLE reference for the complete fit. A plotted finite grid and successful bounded optimization do not prove global optimality. Boundary-flag tests cover interior, lower-bound, and upper-bound fits. Automatic range selection, flat-profile diagnostics, and calibrated parameter intervals remain unimplemented. The experiment does not perform missing-value reconstruction or held-out forecasting.
 
 ## State, Graph, and Dynamical Conventions
 
@@ -362,7 +407,7 @@ Completed groundwork includes repaired trajectory test collection, exact initial
 | --- | --- | --- |
 | P0 | Fix graph/drift semantics before estimation | Document source/target conversion, self-dynamics, feature blocks, signed weights, and model-specific graph constraints. |
 | P0 | Verify packaging | Verify editable installation and examples in a clean environment; package configuration and dependency extras are implemented. |
-| P0 | Extend OU validation and fitting usability | Joint and profile fitting have analytical-reference tests. Add boundary and flat-profile diagnostics before automatic range selection; add repeated-seed recovery and held-out diagnostics. Preserve transition moment/composition checks as further validation work. |
+| P0 | Extend OU validation and fitting usability | Joint and profile fitting have analytical-reference tests. Boundary-proximity flags are implemented. Add flat-profile diagnostics before automatic range selection; add repeated-seed recovery and held-out diagnostics. Preserve transition moment/composition checks as further validation work. |
 | P1 | Define remaining data contracts | Specify zero-volatility bridge behavior, empty inputs, and array copying/sharing rules. |
 | P1 | Clean up the bridge experiment | Add an execution entry point, optional verbose tracing, and separate plotting from reusable computation. |
 | P2 | Improve bridge queue handling | Replace front-removal from a list with a queue; profile other searches before optimizing and preserve joint covariance. |
@@ -445,14 +490,15 @@ src/dynsample/
     simulation/ou.py            # Exact independent scalar OU simulation
     inference/reconstruction/
         brownian_bridge.py      # Implemented conditional sampling
-    estimation/ou.py            # Scalar OU likelihood, initialization, and fitting
+    estimation/brownian.py      # Closed-form scalar Brownian drift/volatility fitting
+    estimation/ou.py            # Scalar OU likelihood, fitting, and boundary flags
     metrics/                    # Placeholder
     sampling/                   # Placeholder
 experiments/
     experiment_brownian_bridge.py
     experiment_ou.py
     experiment_ou_estimation.py
-    experiment_ou_profile.py    # Joint/profile comparison and alpha score curve
+    experiment_ou_profile.py     # Search-range diagnostics and joint/profile comparison
 tests/
 requirements.txt
 pyproject.toml                  # Package metadata and dependency extras
@@ -469,9 +515,11 @@ Extract shared transition and estimation interfaces when working implementations
 - [x] Brownian bridge demonstration.
 - [x] Independent scalar OU transitions and trajectory simulation on irregular times.
 - [x] OU visualization with conditional mean and pointwise state intervals.
+- [x] Closed-form scalar Brownian drift/volatility estimation with analytical and numerical-reference tests.
 - [x] Scalar OU conditional likelihood, bounded fitting, and automatic starting values.
 - [x] OU estimation experiment with in-sample diagnostics and fitted-model simulations.
 - [x] Scalar OU profile fitting with supplied alpha bounds, analytical-reference tests, and a profile-curve experiment.
+- [x] OU profile boundary-proximity flags and search-range comparison experiment.
 - [x] Core finite-value validation, repaired trajectory tests, and package configuration.
 - [ ] Remaining correctness checks and clean-environment installation verification listed above.
 - [ ] Known-structure linear-SDE simulation and parameter-estimation benchmark.
