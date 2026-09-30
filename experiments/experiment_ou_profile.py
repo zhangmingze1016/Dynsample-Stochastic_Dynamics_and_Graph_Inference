@@ -33,6 +33,28 @@ def main() -> None:
         rng=np.random.default_rng(42),
     )
 
+    search_ranges = [
+        (0.01, 0.3),
+        (0.01, 5.0),
+        (0.001, 10.0),
+    ]
+
+    print("\nSEARCH RANGE COMPARISON")
+
+    for bounds in search_ranges:
+        fitted = fit_ou_profile(
+            trajectory=trajectory,
+            alpha_bounds=bounds,
+        )
+
+        print(f"\nAlpha bounds: {bounds}")
+        print(f"alpha: {fitted.mean_reversion:.6f}")
+        print(f"mu: {fitted.long_run_mean:.6f}")
+        print(f"sigma: {fitted.volatility:.6f}")
+        print(f"NLL: {fitted.fun:.8f}")
+        print(f"Near lower bound: {fitted.near_lower_bound}")
+        print(f"Near upper bound: {fitted.near_upper_bound}")
+
     alpha_bounds = (0.001, 5.0)
     profile = fit_ou_profile(trajectory, alpha_bounds=alpha_bounds)
     joint = fit_ou(

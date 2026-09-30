@@ -74,3 +74,44 @@ def test_profile_fit_rejects_degenerate_data() -> None:
     )
     with pytest.raises(ValueError, match="zero residual variance"):
         ou.fit_ou_profile(trajectory, alpha_bounds=(0.01, 5.0))
+
+@pytest.mark.parametrize(
+    "bounds, expected_lower, expected_upper",
+    [
+        ((0.01, 5.0), False, False),
+        ((0.01, 0.3), False, True),
+        ((2.0, 5.0), True, False),
+    ],
+)
+def test_profile_fit_boundary_flags(
+    bounds,
+    expected_lower,
+    expected_upper,
+) -> None:
+    rng = np.random.default_rng(42)
+
+    values = np.empty(401)
+    values[0] = -3.0
+
+    for i in range(1, values.size):
+        values[i] = (
+            0.8 * values[i - 1]
+            - 0.6
+            + 0.5 * rng.standard_normal()
+        )
+
+    trajectory = Trajectory(
+        times=np.arange(values.size) * 0.25,
+        values=values[:, None, None],
+    )
+
+    result = ou.fit_ou_profile(
+        trajectory=trajectory,
+        alpha_bounds=bounds,
+    )
+
+    assert result.success
+    assert result.near_lower_bound == expected_lower
+    assert result.near_upper_bound == expected_upper
+    assert 0.0 <= result.alpha_search_position <= 1.0
+    assert result.boundary_fraction == 0.01

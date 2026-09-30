@@ -330,6 +330,25 @@ def fit_ou_profile(
     result.volatility =sigma
     result.alpha_bounds = (float(lower), float(upper))
 
+    log_width = log_upper - log_lower
+
+    relative_position = (
+        result.log_alpha - log_lower
+    ) / log_width
+
+    boundary_fraction = 0.01
+
+    result.alpha_search_position = float(relative_position)
+    result.boundary_fraction =boundary_fraction
+
+    result.near_lower_bound = bool(
+        relative_position <= boundary_fraction
+    )
+
+    result.near_upper_bound = bool(
+        relative_position >= 1.0 -boundary_fraction
+    )
+
     return result
 
 def fit_ou(
