@@ -4,6 +4,7 @@ from dynsample.simulation.ou import ou_transition
 from scipy.optimize import OptimizeResult, minimize, minimize_scalar
 from dynsample.estimation.brownian import fit_brownian_drift
 
+# Compute the conditional OU negative log-likelihood from observed transitions.
 def ou_negative_log_likelihood(
         trajectory: Trajectory,
         mean_reversion: float,
@@ -58,6 +59,7 @@ def ou_negative_log_likelihood(
 
     return float(total)
 
+# Convert log-scale optimization parameters into physical OU parameters before scoring.
 def _ou_objective(
         parameters: np.ndarray,
         trajectory: Trajectory,
@@ -75,6 +77,7 @@ def _ou_objective(
         volatility = sigma,
     )
 
+# Estimate starting values for alpha, mu, and sigma from the observed trajectory.
 def _initial_ou_parameters(
         trajectory: Trajectory,
 ) -> tuple[float, float, float]:
@@ -119,6 +122,7 @@ def _initial_ou_parameters(
 
     return parameters
 
+# Compute the conditional maximum-likelihood estimate of mu for a fixed alpha.
 def _profile_ou_mu(
         trajectory: Trajectory,
         mean_reversion: float,
@@ -181,6 +185,7 @@ def _profile_ou_mu(
 
     return mu
 
+# Compute the conditional maximum-likelihood estimate of sigma after profiling out mu.
 def _profile_ou_sigma(
         trajectory: Trajectory,
         mean_reversion: float,
@@ -233,6 +238,7 @@ def _profile_ou_sigma(
 
     return float(np.sqrt(sigma_squared))  
 
+# Evaluate the OU negative log-likelihood with mu and sigma fitted at a fixed alpha.
 def _profile_ou_negative_log_likelihood(
         trajectory: Trajectory,
         mean_reversion: float,
@@ -261,6 +267,7 @@ def _profile_ou_negative_log_likelihood(
 
     return float(score)  
 
+# Choose an initial alpha search range from the observation duration and shortest interval.
 def _initial_ou_alpha_bounds(
     trajectory: Trajectory,
 ) -> tuple[float, float]:
@@ -312,6 +319,7 @@ def _initial_ou_alpha_bounds(
 
     return float(lower), float(upper)
 
+# Fit OU parameters by optimizing log(alpha) within supplied bounds and profiling out mu and sigma.
 def fit_ou_profile(
     trajectory: Trajectory,
     alpha_bounds: tuple[float, float]
@@ -403,6 +411,7 @@ def fit_ou_profile(
 
     return result
 
+# Compute reference fits and NLL scores for the Brownian and independent Gaussian limits.
 def _ou_boundary_scores(
     trajectory: Trajectory,
 ) -> dict[str, OptimizeResult]:
@@ -452,9 +461,10 @@ def _ou_boundary_scores(
         "gaussian": gaussian
     }
 
+# Scan a logarithmic alpha grid for candidate minima and record failed evaluations.
 def _scan_ou_profile(
     trajectory: Trajectory,
-    alpha_bounds = tuple[float, float],
+    alpha_bounds: tuple[float, float],
     grid_size: int = 65,
 ) -> OptimizeResult:
     """Scan the OU profile on a logarithmic alpha grid."""
@@ -469,7 +479,15 @@ def _scan_ou_profile(
             "trajectory must contain at least three time points"
         )
 
-    bounds = np.asanyarray(alpha_bounds, dtype = np.float64)
+    bounds = np.asarray(alpha_bounds, dtype=np.float64)
+
+    if bounds.shape != (2,):
+        raise ValueError(
+            "alpha_bounds must contain a lower and an upper bound"
+        )
+
+    if not np.all(np.isfinite(bounds)):
+        raise ValueError("alpha bounds must be finite")
 
     lower, upper = bounds
 
@@ -506,7 +524,7 @@ def _scan_ou_profile(
                 invalid= "raise",
                 under = "ignore"
             ):
-                score = ou_score = _profile_ou_negative_log_likelihood(
+                score  = _profile_ou_negative_log_likelihood(
                     trajectory,
                     float(alpha)
                 )
@@ -537,7 +555,7 @@ def _scan_ou_profile(
     candidate_intervals = []
 
     for i in range(1, grid_size - 1):
-        if not np.all(valid[i - 1: i + 1]):
+        if not np.all(valid[i - 1: i + 2]):
             continue
         
         left_score, center_score, right_score = scores[i - 1:i + 2]
@@ -570,6 +588,286 @@ def _scan_ou_profile(
         nfev = int(grid_size),
     )
 
+# Refine candidate intervals and retain the best finite result from the grid and local searches.
+def _search_ou_profile(
+    trajectory: Trajectory,
+    alpha_bounds: tuple[float, float],
+    grid_size: int = 65,
+) -> OptimizeResult:
+    """Scan and refine the OU profile within supplied bounds."""
+
+    scan = _scan_ou_profile(
+        trajectory = trajectory,
+        alpha_bounds = alpha_bounds,
+        grid_size = grid_size,
+    )
+
+    best_alpha = float(scan.best_alpha)
+    best_score = float(scan.best_score)
+
+    local_results = []
+    failures = {}
+
+    def objective(log_alpha: float) -> float:
+        with np.errstate(           
+            over="raise",
+            divide="raise",
+            invalid="raise",
+            under="ignore",
+        ):
+            alpha = float(np.exp(log_alpha))
+
+            score = _profile_ou_negative_log_likelihood(
+                trajectory,
+                alpha
+            )
+        if not np.isfinite(score):
+            raise ValueError("profile score must be finite")
+
+        return float(score)
+
+    for index, interval in enumerate(scan.candidate_intervals):
+        lower, upper = interval
+
+        try:
+            result = minimize_scalar(
+                fun = objective,
+                bounds = (
+                    float(np.log(lower)),
+                    float(np.log(upper)),
+                ),
+                method = "bounded",
+                options = {"xatol": 1e-8},
+            )
+
+            local_results.append(result)
+
+            if not result.success:
+                failures[index] = str(result.message)
+                continue
+
+            if (
+                not np.isfinite(result.x)
+                or not np.isfinite(result.fun)
+            ):
+                failures[index] = (
+                    "local optimization produced a non-finite result"
+                )
+                continue
+
+            alpha = float(np.exp(result.x))
+
+            if not lower <= alpha <= upper:
+                failures[index] =(
+                    "local optimization returned alpha outside its interval"
+                )
+                continue
+
+            if result.fun < best_score:
+                best_alpha = alpha
+                best_score =float(result.fun)
+
+        except (ValueError, FloatingPointError) as error:
+            failures[index] = str(error)
+
+    complete = not scan.failures and not failures
+
+    return OptimizeResult(
+        x = best_alpha,
+        fun = best_score,
+        success = complete,
+        message=(
+            "Grid scan and local refinements completed."
+            if complete
+            else "Search incomplete; returning the best finite candidate."
+        ),
+        scan=scan,
+        local_results=local_results,
+        failures=failures,
+    )
+
+# Report proximity to search boundaries, boundary-limit NLL differences, and search completeness.
+def _diagnose_ou_search(
+    search: OptimizeResult,
+    boundary_scores: dict[str, OptimizeResult]
+) -> OptimizeResult:
+    """Report search position and NLL differences from boundary limits."""
+
+    lower = float(search.scan.alphas[0])
+    upper = float(search.scan.alphas[-1])
+
+    alpha = float(search.x)
+    score = float(search.fun)
+
+    if (
+        not np.all(np.isfinite([lower, upper, alpha, score]))
+        or lower <= 0.0
+        or upper <= lower
+        or not lower <= alpha <= upper
+    ):
+        raise ValueError(
+            "search must contain finite results within valid alpha bounds"
+        )
+
+    log_lower = float(np.log(lower))
+    log_upper = float(np.log(upper))
+    log_alpha = float(np.log(alpha))
+
+    position = (
+        (log_alpha - log_lower)
+        / (log_upper - log_lower)
+    )
+
+    boundary_fraction = 0.01
+
+    near_lower = bool(position <= boundary_fraction)
+    near_upper = bool(position >= 1.0 - boundary_fraction)
+
+    brownian_score = float(boundary_scores["brownian"].fun)
+    gaussian_score = float(boundary_scores["gaussian"].fun)
+
+    if not np.all(
+        np.isfinite([brownian_score, gaussian_score])
+    ):
+        raise ValueError("boundary scores must be finite")
+
+    with np.errstate(over = "raise", invalid = "raise"):
+        brownian_gap = float(
+            np.float64(brownian_score) - np.float64(score)
+        )
+        gaussian_gap = float(
+            np.float64(gaussian_score) - np.float64(score)
+        )
+
+    return OptimizeResult(
+        alpha_bounds=(lower, upper),
+        alpha_search_position=float(position),
+        boundary_fraction=boundary_fraction,
+        near_lower_bound=near_lower,
+        near_upper_bound=near_upper,
+        brownian_nll_gap=brownian_gap,
+        gaussian_nll_gap=gaussian_gap,
+        search_complete=bool(search.success),
+    )
+
+# Choose and expand alpha bounds automatically, retaining the best candidate and reporting the stopping reason.
+def _search_ou_profile_auto(
+    trajectory: Trajectory,
+    grid_size = 65,
+    max_expansions: int = 6,
+    nll_tolerance: float = 1e-6,
+) -> OptimizeResult:
+    """Search automatically and report why the search stopped."""
+
+    if (
+        isinstance(max_expansions, bool)
+        or not isinstance(max_expansions, (int, np.integer))
+        or max_expansions < 0
+    ):
+        raise ValueError(
+            "max_expansions must be a non-negative integer"
+        )
+
+    if not np.isfinite(nll_tolerance) or nll_tolerance < 0.0:
+        raise ValueError(
+            "nll_tolerance must be finite and non-negative"
+        )
+
+    lower, upper = _initial_ou_alpha_bounds(trajectory)
+    boundary_scores = _ou_boundary_scores(trajectory)
+
+    history = []
+    best_search = None
+
+    for expansion in range(max_expansions + 1):
+        search = _search_ou_profile(
+            trajectory= trajectory,
+            alpha_bounds = (lower, upper),
+            grid_size = grid_size,
+        )
+
+        diagnostics = _diagnose_ou_search(
+            search = search,
+            boundary_scores = boundary_scores,
+        )
+
+        history.append(
+            OptimizeResult(
+                search = search,
+                diagnostics = diagnostics
+            )
+        )
+
+        if best_search is None or search.fun < best_search.fun:
+            best_search = search
+
+        if not search.success:
+            status = "incomplete_search"
+            break
+
+        lower_better = (
+            diagnostics.brownian_nll_gap < -nll_tolerance
+        )
+        upper_better = (
+            diagnostics.gaussian_nll_gap < -nll_tolerance
+        )
+
+        lower_close = (
+            diagnostics.near_lower_bound
+            and abs(diagnostics.brownian_nll_gap) <= nll_tolerance
+        )
+        upper_close = (
+            diagnostics.near_upper_bound
+            and abs(diagnostics.gaussian_nll_gap) <= nll_tolerance
+        )
+
+        if (
+            (lower_close or upper_close)
+            and not lower_better
+            and not upper_better
+        ):
+            status = "boundary_limit"
+            break
+
+        expand_lower = (
+            diagnostics.near_lower_bound or lower_better
+        )
+        expand_upper = (
+            diagnostics.near_upper_bound or upper_better
+        )
+
+        if not expand_lower and not expand_upper:
+            status = "interior_candidate"
+            break
+
+        if expansion == max_expansions:
+            status = "expansion_limit"
+            break
+
+        new_lower = lower / 10.0 if expand_lower else lower
+        new_upper = upper * 10.0 if expand_upper else upper
+
+        if (
+            not np.all(np.isfinite([new_lower, new_upper]))
+            or new_lower <= 0.0
+        ):
+            status = "numerical_limit"
+            break
+
+        lower, upper = new_lower, new_upper
+
+    return OptimizeResult(
+        x=float(best_search.x),
+        fun=float(best_search.fun),
+        success=(status == "interior_candidate"),
+        status=status,
+        best_search=best_search,
+        boundary_scores=boundary_scores,
+        history=history,
+        expansions=len(history) - 1,
+    )
+
+# Fit alpha, mu, and sigma jointly using bounded optimization with log-scale alpha and sigma.
 def fit_ou(
         
         trajectory: Trajectory,
