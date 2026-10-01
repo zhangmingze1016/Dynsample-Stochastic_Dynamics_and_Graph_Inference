@@ -22,8 +22,8 @@ Node time series + timestamps
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
 | Brownian estimation | Closed-form scalar drift and volatility MLE. |
-| OU estimation | Conditional NLL, bounded joint fitting with automatic starts, and profile fitting with supplied alpha bounds and boundary-proximity flags. |
-| Validation examples | Analytical-reference tests, scalar fitting diagnostics, and small-/large-alpha boundary experiments. |
+| OU estimation | Conditional NLL, automatic profile search, optional joint-fit starts/bounds, and boundary diagnostics through `ds.fit_ou`. |
+| Validation examples | Analytical-reference tests, eight input-combination comparisons, and small-/large-alpha boundary experiments. |
 
 `Graph` stores relationships; it does not learn them. Current estimators require complete, exact scalar observations of shape `(T,1,1)`. Multi-node simulation currently uses independent components. An observation mask alone does not provide missing-data inference.
 
@@ -70,22 +70,34 @@ This draws a conditional path using only the two supplied endpoints. It does not
 
 ## Fit Scalar OU Parameters
 
-For an existing complete scalar `trajectory`:
+For an existing complete scalar `trajectory` of shape `(T,1,1)`:
 
 ```python
-from dynsample.estimation.ou import fit_ou_profile
+import dynsample as ds
 
-result = fit_ou_profile(trajectory, alpha_bounds=(0.001, 5.0))
+result = ds.fit_ou(trajectory)
 print(result.mean_reversion, result.long_run_mean, result.volatility)
-print(result.fun)
-print(result.near_lower_bound, result.near_upper_bound)
+print(result.fun, result.success, result.message)
 ```
 
-The example bounds are not universal defaults. Profile fitting requires alpha bounds but no mu/sigma initial values or bounds. Automatic alpha-range selection is the next development task and is not available yet.
+`ds.State`, `ds.Trajectory`, `ds.fit_ou`, `ds.fit_ou_profile`, and `ds.fit_ou_joint` are exported at package level. Simulation and Brownian bridge functions retain their module imports.
 
-The existing `fit_ou` joint optimizer still requires `initial_parameters` (which may be `None`) and three `parameter_bounds` pairs. Its `x` contains `(log(alpha), mu, log(sigma))`; the profile result's `x` is physical alpha. Optimizer success and boundary flags describe numerical behavior, not parameter accuracy or confidence intervals.
+All three fitting options are independently optional and may be combined:
 
-See the [current scalar API and experiment reference](docs/DEVELOPMENT_PLAN.md#appendix-a-current-scalar-api-and-experiment-reference) for Brownian estimation, return fields, bounds, and experiment interpretation.
+```python
+result = ds.fit_ou(
+    trajectory,
+    initial_parameters=(0.7, 10.0, 1.5),
+    parameter_bounds=((0.01, 5.0), (-20.0, 20.0), (0.1, 5.0)),
+    alpha_bounds=(0.1, 2.0),
+)
+```
+
+These numbers are examples, not universal defaults. Initial values are starting guesses, not fixed parameters. With neither initial parameters nor three-parameter bounds, the interface uses profile fitting; supplying either selects joint optimization. Two supplied alpha ranges are intersected. Conflicting ranges or explicit starting values outside the effective bounds are rejected. Individual `None` entries inside parameter tuples are not supported.
+
+Prefer the named parameter fields above: profile `x` is physical alpha, whereas joint `x` contains `(log(alpha), mu, log(sigma))`. The dispatcher reports `method`. Inspect `success`, `message`, and profile boundary diagnostics before using a result; numerical convergence does not establish a global optimum, parameter accuracy, or confidence intervals.
+
+See the [scalar API reference](docs/DEVELOPMENT_PLAN.md#scalar-ou-fitting-and-experiment) for all eight combinations, allowed bounds, stopping states, and limitations.
 
 ## Tests and Experiments
 
@@ -97,15 +109,18 @@ python -m experiments.experiment_brownian_bridge
 python -m experiments.experiment_ou
 python -m experiments.experiment_ou_estimation
 python -m experiments.experiment_ou_profile
+python -m experiments.experiment_ou_interface
 python -m experiments.experiment_ou_brownian_limit
 python -m experiments.experiment_ou_large_alpha_limit
 ```
 
-Save the profile figure without opening a window:
+Save the interface-comparison figure without opening a window:
 
 ```bash
-python -m experiments.experiment_ou_profile --no-show --save /tmp/ou_profile.png
+python -m experiments.experiment_ou_interface --no-show --save /tmp/ou_interface.png
 ```
+
+The interface experiment fits one irregular trajectory with eight combinations of optional inputs. Similar scores demonstrate agreement on that dataset, not universal recovery accuracy. `argparse` and `pathlib` are Python standard-library modules and need no extra dependency.
 
 Plots of conditional state intervals describe process uncertainty under supplied parameters, not parameter uncertainty or simultaneous path coverage. Lines connecting sampled states are display connections, not inferred intermediate paths.
 
@@ -126,7 +141,7 @@ The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of trut
 
 ## Current Limitations
 
-- No graph fitting, automatic alpha-range selection, or calibrated parameter intervals yet.
+- No graph fitting or calibrated parameter intervals yet. Automatic profile search is heuristic and budget-limited; unbounded joint optimization can still fail numerically.
 - Adjacency uses source-to-target indexing: `adjacency[i,j]` means i→j. Planned drift K[i,j] acts from j→i; conversion must preserve this distinction.
 - Zero-volatility Brownian bridges currently interpolate even incompatible distinct endpoints. This behavior needs correction before release; use positive volatility for stochastic bridge examples.
 - Clean-environment installation verification and the remaining data-contract checks are release tasks recorded in the plan.

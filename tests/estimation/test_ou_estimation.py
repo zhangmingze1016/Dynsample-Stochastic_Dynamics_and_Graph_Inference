@@ -85,16 +85,49 @@ def test_objective_matches_direct_likelihood(mu):
 @pytest.mark.parametrize(
     "initial, bounds, message",
     [
-        ((0.7, 10.0), ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)), "three initial"),
-        ((0.7, 10.0, 1.5), (0.01, 5.0), "three initial"),
-        ((np.nan, 10.0, 1.5), ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)), "finite"),
-        ((0.7, 10.0, 1.5), ((0.01, np.inf), (-20.0, 20.0), (0.01, 10.0)), "finite"),
-        ((0.7, 10.0, 1.5), ((5.0, 0.01), (-20.0, 20.0), (0.01, 10.0)), "lower bound"),
-        ((0.7, 10.0, 1.5), ((0.0, 5.0), (-20.0, 20.0), (0.01, 10.0)), "positive"),
-        ((0.7, 10.0, 1.5), ((0.01, 5.0), (-20.0, 20.0), (-1.0, 10.0)), "positive"),
-        ((6.0, 10.0, 1.5), ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)), "within"),
+        (
+            (0.7, 10.0),
+            ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)),
+            "initial_parameters must contain",
+        ),
+        (
+            (0.7, 10.0, 1.5),
+            (0.01, 5.0),
+            "three bounds pairs",
+        ),
+        (
+            (np.nan, 10.0, 1.5),
+            ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)),
+            "finite",
+        ),
+        (
+            (0.7, 10.0, 1.5),
+            ((0.01, np.nan), (-20.0, 20.0), (0.01, 10.0)),
+            "NaN",
+        ),
+        (
+            (0.7, 10.0, 1.5),
+            ((5.0, 0.01), (-20.0, 20.0), (0.01, 10.0)),
+            "lower bound",
+        ),
+        (
+            (0.7, 10.0, 1.5),
+            ((-0.1, 5.0), (-20.0, 20.0), (0.01, 10.0)),
+            "non-negative",
+        ),
+        (
+            (0.7, 10.0, 1.5),
+            ((0.01, 5.0), (-20.0, 20.0), (-1.0, 10.0)),
+            "non-negative",
+        ),
+        (
+            (6.0, 10.0, 1.5),
+            ((0.01, 5.0), (-20.0, 20.0), (0.01, 10.0)),
+            "within",
+        ),
     ],
 )
+
 def test_fit_rejects_invalid_configuration(initial, bounds, message):
     trajectory = Trajectory(
         times=np.array([0.0, 1.0]),
@@ -402,3 +435,233 @@ def test_profile_ou_likelihood_rejects_zero_residual_variance() -> None:
 
     with pytest.raises(ValueError, match="zero residual variance"):
         _profile_ou_negative_log_likelihood(trajectory, 0.7)
+
+def test_fit_ou_accepts_initial_parameters_without_bounds() -> None:
+    rng = np.random.default_rng(42)
+
+    values = np.empty(401)
+    values[0] = -3.0
+
+    for i in range(1, values.size):
+        values[i] = (
+            0.8 * values[i - 1]
+            - 0.6
+            + 0.5 * rng.standard_normal()
+        )
+
+    trajectory = Trajectory(
+        times=np.arange(values.size) * 0.25,
+        values=values[:, None, None],
+    )
+
+    initial = (0.7, -2.0, 1.0)
+
+    initial_score = ou_negative_log_likelihood(
+        trajectory,
+        *initial,
+    )
+
+    result = fit_ou(
+        trajectory,
+        initial_parameters=initial,
+    )
+
+    assert result.success, result.message
+    assert result.method == "joint"
+
+    parameters = (
+        result.mean_reversion,
+        result.long_run_mean,
+        result.volatility,
+    )
+
+    assert np.all(np.isfinite(parameters))
+    assert result.mean_reversion > 0.0
+    assert result.volatility > 0.0
+    assert result.fun <= initial_score + 1e-8
+
+    recomputed_score = ou_negative_log_likelihood(
+        trajectory,
+        *parameters,
+    )
+
+    np.testing.assert_allclose(
+        result.fun,
+        recomputed_score,
+        rtol=1e-10,
+        atol=1e-8,
+    )
+
+
+
+@pytest.fixture
+def ou_entry_trajectory() -> Trajectory:
+    rng = np.random.default_rng(42)
+
+    values = np.empty(401)
+    values[0] = -3.0
+
+    for i in range(1, values.size):
+        values[i] = (
+            0.8 * values[i - 1]
+            - 0.6
+            + 0.5 * rng.standard_normal()
+        )
+
+    return Trajectory(
+        times=np.arange(values.size) * 0.25,
+        values=values[:, None, None],
+    )
+
+@pytest.mark.parametrize(
+    "kwargs, expected_method, expected_alpha_bounds",
+    [
+        pytest.param(
+            {},
+            "profile",
+            None,
+            id="no-options",
+        ),
+        pytest.param(
+            {
+                "parameter_bounds": (
+                    (0.01, 5.0),
+                    (-10.0, 10.0),
+                    (0.1, 5.0),
+                ),
+            },
+            "joint",
+            (0.01, 5.0),
+            id="parameter-bounds-only",
+        ),
+        pytest.param(
+            {
+                "alpha_bounds": (0.1, 2.0),
+            },
+            "profile",
+            (0.1, 2.0),
+            id="alpha-bounds-only",
+        ),
+        pytest.param(
+            {
+                "initial_parameters": (0.7, -2.0, 1.0),
+                "parameter_bounds": (
+                    (0.01, 5.0),
+                    (-10.0, 10.0),
+                    (0.1, 5.0),
+                ),
+            },
+            "joint",
+            (0.01, 5.0),
+            id="initial-and-parameter-bounds",
+        ),
+        pytest.param(
+            {
+                "initial_parameters": (0.7, -2.0, 1.0),
+                "alpha_bounds": (0.1, 2.0),
+            },
+            "joint",
+            (0.1, 2.0),
+            id="initial-and-alpha-bounds",
+        ),
+        pytest.param(
+            {
+                "parameter_bounds": (
+                    (0.01, 5.0),
+                    (-10.0, 10.0),
+                    (0.1, 5.0),
+                ),
+                "alpha_bounds": (0.1, 2.0),
+            },
+            "joint",
+            (0.1, 2.0),
+            id="both-bounds",
+        ),
+        pytest.param(
+            {
+                "initial_parameters": (0.7, -2.0, 1.0),
+                "parameter_bounds": (
+                    (0.01, 5.0),
+                    (-10.0, 10.0),
+                    (0.1, 5.0),
+                ),
+                "alpha_bounds": (0.1, 2.0),
+            },
+            "joint",
+            (0.1, 2.0),
+            id="all-options",
+        ),
+    ],
+)
+def test_fit_ou_optional_input_combinations(
+    ou_entry_trajectory: Trajectory,
+    kwargs,
+    expected_method,
+    expected_alpha_bounds,
+) -> None:
+    result = fit_ou(
+        ou_entry_trajectory,
+        **kwargs,
+    )
+
+    assert result.success, result.message
+    assert result.method == expected_method
+
+    parameters = (
+        result.mean_reversion,
+        result.long_run_mean,
+        result.volatility,
+    )
+
+    assert np.all(np.isfinite(parameters))
+    assert result.mean_reversion > 0.0
+    assert result.volatility > 0.0
+
+    if expected_alpha_bounds is not None:
+        lower, upper = expected_alpha_bounds
+
+        assert lower - 1e-8 <= result.mean_reversion <= upper + 1e-8
+
+    if "parameter_bounds" in kwargs:
+        bounds = kwargs["parameter_bounds"]
+
+        for value, (lower, upper) in zip(parameters, bounds):
+            assert lower - 1e-8 <= value <= upper + 1e-8
+
+    recomputed_score = ou_negative_log_likelihood(
+        ou_entry_trajectory,
+        *parameters,
+    )
+
+    np.testing.assert_allclose(
+        result.fun,
+        recomputed_score,
+        rtol=1e-10,
+        atol=1e-8,
+    )
+
+def test_fit_ou_enforces_intersection_of_alpha_bounds(
+    ou_entry_trajectory: Trajectory,
+) -> None:
+    result = fit_ou(
+        ou_entry_trajectory,
+        initial_parameters=(0.15, -3.0, 1.0),
+        parameter_bounds=(
+            (0.01, 5.0),
+            (-10.0, 10.0),
+            (0.1, 5.0),
+        ),
+        alpha_bounds=(0.1, 0.2),
+    )
+
+    assert result.success, result.message
+    assert result.method == "joint"
+
+    assert 0.1 - 1e-8 <= result.mean_reversion <= 0.2 + 1e-8
+
+    np.testing.assert_allclose(
+        result.mean_reversion,
+        0.2,
+        rtol=0.0,
+        atol=1e-5,
+    )

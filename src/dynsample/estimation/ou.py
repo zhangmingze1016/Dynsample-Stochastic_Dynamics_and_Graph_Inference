@@ -921,43 +921,85 @@ def _search_ou_profile_auto(
     )
 
 # Fit alpha, mu, and sigma jointly using bounded optimization with log-scale alpha and sigma.
-def fit_ou(
+def fit_ou_joint(
         
         trajectory: Trajectory,
-        initial_parameters: tuple[float, float, float] | None,
+        initial_parameters: tuple[float, float, float] | None = None,
         parameter_bounds: tuple[
             tuple[float, float],
             tuple[float, float],
             tuple[float, float],
-        ],
+        ] | None = None,
 ) -> OptimizeResult:
-    if initial_parameters is None:
-        initial_parameters = _initial_ou_parameters(trajectory)
-    initial = np.asarray(
-        initial_parameters,
-        dtype = np.float64,
-    )
-    
-    bounds = np.asarray(parameter_bounds, dtype = np.float64)
+    automatic_initial = initial_parameters is None
 
-    if initial.shape != (3,) or bounds.shape != (3, 2):
+    if automatic_initial:
+        initial = np.asarray(
+            _initial_ou_parameters(trajectory),
+            dtype = np.float64
+        )
+    else:
+        initial = np.asarray(
+            initial_parameters,
+            dtype = np.float64
+        )
+
+    if initial.shape != (3,):
+        raise ValueError(
+            "initial_parameters must contain alpha, mu, and sigma"
+        )
+
+    if not np.all(np.isfinite(initial)):
+        raise ValueError("initial parameters must be finite")
+
+    if initial[0] <= 0.0 or initial[2] <= 0.0:
+        raise ValueError("initial alpha and sigma must be positive")
+
+    original_initial = initial.copy()
+    search_bounds = None
+
+    if parameter_bounds is not None:
+        bounds = np.asarray(
+            parameter_bounds,
+            dtype = np.float64,
+        )
+
+        if bounds.shape != (3, 2):
+            raise ValueError("provide three bounds pairs")
+
+        if np.any(np.isnan(bounds)):
+            raise ValueError("parameter bounds must not contain NaN")
+
+        if np.any(bounds[:, 0] >= bounds[:, 1]):
             raise ValueError(
-                "provide three initial values and three bounds pairs"
+                "each lower bound must be smaller than its upper bound"
             )
 
-    if not np.all(np.isfinite(initial)) or not np.all(np.isfinite(bounds)):
-        raise ValueError("initial values and bounds must be finite")
+        if np.any(bounds[[0, 2], 0] < 0.0):
+            raise ValueError(
+                "alpha and sigma lower bounds must be non-negative"
+            )
 
-    if np.any(bounds[:, 0] >= bounds[:, 1]):
-        raise ValueError("each lower bound must be smaller than its upper bound")
+        if automatic_initial:
+            initial = np.clip(
+                initial,
+                bounds[:, 0],
+                bounds[:, 1],
+            )
+        elif np.any(initial < bounds[:, 0]) or np.any(
+            initial > bounds[:, 1]
+        ):
+            raise ValueError(
+                "initial values must lie within the supplied bounds"
+            )
+        
+        search_bounds = bounds.copy()
 
-    if bounds[0, 0] <= 0.0 or bounds[2, 0] <= 0.0:
-        raise ValueError("alpha and sigma bounds must be positive")
+        with np.errstate(divide = "ignore"):
+            search_bounds[[0, 2], :] = np.log(
+                bounds[[0, 2], :]
+            )
 
-    if np.any(initial < bounds[:, 0]) or np.any(initial > bounds[:, 1]):
-        raise ValueError("initial values must lie within the bounds")
-
-    
     initial_score = ou_negative_log_likelihood(
         trajectory = trajectory,
         mean_reversion = float(initial[0]),
@@ -966,13 +1008,14 @@ def fit_ou(
     )
 
     if not np.isfinite(initial_score):
-        raise ValueError("initial negative log-likelihood must be finite")
+        raise ValueError(
+            "initial negative log-likelihood must be finite"
+        )
 
     search_initial = initial.copy()
-    search_initial[[0, 2]] = np.log(initial[[0, 2]])
-
-    search_bounds = bounds.copy()
-    search_bounds[[0, 2], :] = np.log(bounds[[0, 2], :])
+    search_initial[[0,2]] = np.log(
+        search_initial[[0, 2]]
+    )
 
     result = minimize(
         fun = _ou_objective,
@@ -982,5 +1025,112 @@ def fit_ou(
         bounds = search_bounds,
     )
 
-    return result
+    with np.errstate(over="raise", invalid="raise"):
+        alpha = float(np.exp(result.x[0]))
+        mu = float(result.x[1])
+        sigma = float(np.exp(result.x[2]))
 
+    if (
+        not np.all(np.isfinite([alpha, mu, sigma, result.fun]))
+        or alpha <= 0.0
+        or sigma <= 0.0
+    ):
+        raise RuntimeError(
+            "joint optimization produced invalid parameters or score"
+        )
+
+    result.mean_reversion = alpha
+    result.long_run_mean = mu
+    result.volatility = sigma
+    result.initial_parameters = tuple(float(x) for x in initial)
+    result.initial_was_adjusted = bool(
+        np.any(initial != original_initial)
+    )
+    result.method = "joint"
+
+    return result
+        
+# Use profile fitting by default while preserving legacy joint-fit calls.
+def fit_ou(
+    trajectory: Trajectory,
+    initial_parameters: tuple[float, float, float] | None = None,
+    parameter_bounds: tuple[
+        tuple[float, float],
+        tuple[float, float],
+        tuple[float, float],
+    ] | None = None,
+    *,
+    alpha_bounds: tuple[float, float] | None = None,
+) -> OptimizeResult:
+    if initial_parameters is None and parameter_bounds is None:
+        result = fit_ou_profile(
+            trajectory = trajectory,
+            alpha_bounds = alpha_bounds
+        )
+        result.method = "profile"
+        return result
+
+    combined_bounds = parameter_bounds
+
+    if alpha_bounds is not None:
+        alpha_range = np.asarray(
+            alpha_bounds,
+            dtype=np.float64,
+        )
+
+        if (
+            alpha_range.shape != (2,)
+            or not np.all(np.isfinite(alpha_range))
+        ):
+            raise ValueError(
+                "alpha_bounds must contain two finite values"
+            )
+
+        if alpha_range[0] <= 0.0 or alpha_range[1] <= alpha_range[0]:
+            raise ValueError(
+                "alpha bounds must satisfy 0 < lower < upper"
+            )
+
+        if parameter_bounds is None:
+            combined_bounds = np.array(
+                [
+                    alpha_range,
+                    [-np.inf, np.inf],
+                    [0.0, np.inf],
+                ],
+                dtype=np.float64,
+            )
+        else:
+            combined_bounds = np.array(
+                parameter_bounds,
+                dtype=np.float64,
+                copy=True,
+            )
+
+            if combined_bounds.shape != (3, 2):
+                raise ValueError("provide three bounds pairs")
+
+            if np.any(np.isnan(combined_bounds)):
+                raise ValueError(
+                    "parameter bounds must not contain NaN"
+                )
+
+            combined_bounds[0, 0] = max(
+                combined_bounds[0, 0],
+                alpha_range[0],
+            )
+            combined_bounds[0, 1] = min(
+                combined_bounds[0, 1],
+                alpha_range[1],
+            )
+
+            if combined_bounds[0, 0] >= combined_bounds[0, 1]:
+                raise ValueError(
+                    "the supplied alpha ranges have no interval in common"
+                )
+
+    return fit_ou_joint(
+        trajectory=trajectory,
+        initial_parameters=initial_parameters,
+        parameter_bounds=combined_bounds,
+    )

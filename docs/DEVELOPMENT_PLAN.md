@@ -1,6 +1,6 @@
 # Dynsample Development Execution Plan
 
-Updated: 2026-09-30. Code baseline: `bb4f4f5` (v019). This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
+Updated: 2026-10-01. Baseline: v023 plus the current, uncommitted flexible-interface changes intended for v024. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
 
 ## 1. Objective and Working Rules
 
@@ -20,7 +20,7 @@ Scalar OU closeout (A)
 ```
 
 - R denotes a release or milestone, not a model count or a Git commit label such as v019.
-- The current task is A1. Move directly to B after completing A; do not keep adding scalar OU research features.
+- The current task is A3 validation and documentation; A1 search and A2 interface implementations are present. Move directly to B after completing A; do not keep adding scalar OU research features.
 - Before providing code, identify the task, objective, file, function, mathematical assumptions, return values, and acceptance checks. Explain code line by line or block by block.
 - The user studies and enters core implementation code. Do not modify core source without an explicit request. Handle tests and experiments according to the authorization for the current task.
 - Record the implementation, relevant tests, and unresolved limitations when completing a task. One successful experiment does not establish correctness for all inputs, global optimality, or statistical reliability.
@@ -57,22 +57,22 @@ Existing functionality was identified through code inspection. This is not a cla
 | `src/dynsample/inference/reconstruction/brownian_bridge.py` | `brownian_bridge_step`, `brownian_bridge` | Sample individual states and joint paths conditional on endpoints; no parameter or graph inference. |
 | `src/dynsample/estimation/brownian.py` | `fit_brownian_drift` | Drift and volatility MLE for complete irregular scalar data; also the small-alpha OU boundary reference. |
 | `src/dynsample/estimation/ou.py` | `ou_negative_log_likelihood` | Scalar OU conditional NLL. |
-| Same file | `_ou_objective`, `_initial_ou_parameters`, `fit_ou` | Joint optimization and automatic initialization; still requires three bound pairs, with `x` in optimizer coordinates. |
+| Same file | `_ou_objective`, `_initial_ou_parameters`, `fit_ou`, `fit_ou_joint` | Public dispatch through `fit_ou`; `fit_ou_joint` supports optional starts and optional bounds, with `x` in optimizer coordinates. |
 | Same file | `_profile_ou_mu`, `_profile_ou_sigma`, `_profile_ou_negative_log_likelihood` | Analytically eliminate mu and sigma at fixed alpha and evaluate the profile NLL. |
-| Same file | `fit_ou_profile` | Optimize within supplied alpha bounds and report boundary proximity; `x` is physical alpha. |
-| Package `__init__.py` files | Package exports | Organize at release time; `metrics` and `sampling` are currently placeholders. |
+| Same file | `fit_ou_profile` | Automatic bounded expansion when bounds are omitted; grid scan and local refinement within explicit bounds; `x` is physical alpha. |
+| Package `__init__.py` files | Package exports | Top-level exports include State, Trajectory, fit_ou, fit_ou_joint, and fit_ou_profile; metrics and sampling remain placeholders. |
 
 Existing validation files:
 
 | File | Validation responsibility |
 | --- | --- |
-| `tests/test_state.py`, `test_trajectory.py`, `test_observation.py`, `test_graph.py` | Data contracts; fill specific discovered gaps as needed. |
-| `tests/test_brownian.py`, `test_ou.py` | Transitions, simulation, time and parameter validation, reproducibility. |
-| `tests/test_brownian_bridge.py` | Endpoint conditions, joint means and covariances; correct zero-noise semantics in E. |
-| `tests/test_ou_estimation.py` | NLL, initialization, analytical profile parameters, independent optimization references. |
-| `tests/test_ou_profile_fit.py` | Complete profile fitting, supplied ranges, and boundary flags. |
-| `tests/test_brownian_estimation.py` | Analytical drifted Brownian MLE and independent density checks. |
-| `tests/test_ou_limits.py` | Numerical checks near both limits; not a substitute for theoretical proofs. |
+| `tests/core/test_state.py`, `test_trajectory.py`, `test_observation.py`, `test_graph.py` | Data contracts; fill specific discovered gaps as needed. |
+| `tests/simulation/test_brownian.py`, `test_ou.py` | Transitions, simulation, time and parameter validation, reproducibility. |
+| `tests/inference/test_brownian_bridge.py` | Endpoint conditions, joint means and covariances; correct zero-noise semantics in E. |
+| `tests/estimation/test_ou_estimation.py` | NLL, initialization, analytical profile parameters, independent optimization references. |
+| `tests/estimation/test_ou_profile_fit.py` | Complete profile fitting, supplied ranges, and boundary flags. |
+| `tests/estimation/test_brownian_estimation.py` | Analytical drifted Brownian MLE and independent density checks. |
+| `tests/estimation/test_ou_limits.py` | Numerical checks near both limits; not a substitute for theoretical proofs. |
 
 Existing experiment `main` functions or script entry points organize data, calls, reporting, and plots. Reusable estimation logic belongs in the package:
 
@@ -80,6 +80,7 @@ Existing experiment `main` functions or script entry points organize data, calls
 - `experiments/experiment_ou.py`: independent OU simulation and conditional intervals with known parameters.
 - `experiments/experiment_ou_estimation.py`: joint fitting, residuals, and new trajectories.
 - `experiments/experiment_ou_profile.py`: joint/profile comparison and sensitivity to supplied ranges.
+- `experiments/experiment_ou_interface.py`: eight optional-input combinations through `ds.fit_ou`, with parameter and NLL comparison plots.
 - `experiments/experiment_ou_brownian_limit.py`: small-alpha limits of alpha*mu, sigma, and NLL.
 - `experiments/experiment_ou_large_alpha_limit.py`: large-alpha limits of mu, sigma²/(2alpha), and NLL.
 
@@ -87,19 +88,19 @@ Existing experiment `main` functions or script entry points organize data, calls
 
 Objective: a usable scalar estimation entry point that does not require bounds by default. A complete scalar statistics package is outside this stage's scope.
 
-### A1. Automatic Search and Boundary Diagnostics — Next Task, Not Implemented
+### A1. Automatic Search and Boundary Diagnostics — Implemented; Acceptance Audit Remains
 
 Keep new computations in `src/dynsample/estimation/ou.py` initially. Do not build a general optimization framework.
 
-| Planned function | Input/output objective | Limits of responsibility |
+| Function | Input/output objective | Limits of responsibility |
 | --- | --- | --- |
 | `_initial_ou_alpha_bounds` | Return an initial positive interval from trajectory times, using duration and interval scales; rescale correctly when time units change. | Does not claim to contain the global optimum. |
 | `_ou_boundary_scores` | Return Brownian and independent Gaussian boundary NLLs and reference parameters; conditional on x0, use only x1…xn for the Gaussian reference. | Do not represent boundary models as finite OU parameters. |
-| `_search_ou_profile` | Identify candidate minima on a log(alpha) grid, refine locally, and expand when justified; return the best finite candidate and search records. | Do not assume unimodality or guarantee global optimality. |
+| `_scan_ou_profile`, `_search_ou_profile`, `_search_ou_profile_auto` | Scan candidate minima, refine locally, and control bounded expansion in separate helpers; retain the best finite candidate and search records. | Do not assume unimodality or guarantee global optimality. |
 | `_diagnose_ou_search` | Combine finite candidates, boundary scores, failures, and computational budget into diagnostics. | Similar scores are not confidence intervals or model probabilities. |
 | `fit_ou_profile`, extending the existing function | Use automatic search for `alpha_bounds=None`; preserve constrained search for explicitly supplied bounds. | Do not silently exceed supplied bounds or change existing `x` semantics. |
 
-Before implementation, explain comparisons under the same conditional likelihood, changes of time units, candidate minima, and expansion stopping rules. Treat degenerate variance, extreme interval ratios, and non-finite calculations separately.
+Remaining acceptance review must check consistent conditional likelihoods, changes of time units, candidate minima, and expansion stopping rules. Treat degenerate variance, extreme interval ratios, and non-finite calculations separately.
 
 Consider `0.01/T` and `-log(0.01)/min(dt)` as initial bounds to validate, not guaranteed limits. The value 0.01 is not a coverage guarantee; a tiny dt can create an enormous range. Centralize and record search settings instead of scattering unexplained constants.
 
@@ -107,12 +108,12 @@ Required result information: physical parameters, finite-candidate NLL, both bou
 
 Acceptance: automatic and manual searches agree on an interior solution; both boundary competition and degenerate data are covered; budget exhaustion is reported honestly; alpha, sigma, and NLL transform as theoretically expected under time rescaling; search logic handles multiple candidate minima in dedicated tests. If profile evaluation near either boundary is unstable, pause to examine the parameterization before proceeding.
 
-### A2. Interface and Compatibility — Depends on A1
+### A2. Interface and Compatibility — Implemented in the Current Working Tree
 
-Keep implementation in `estimation/ou.py`, updating `tests/test_ou_estimation.py` and `tests/test_ou_profile_fit.py`.
+Keep implementation in `estimation/ou.py`, updating `tests/estimation/test_ou_estimation.py` and `tests/estimation/test_ou_profile_fit.py`.
 
-- Extract the existing joint algorithm into `fit_ou_joint` as an independent reference. Do not develop automatic three-parameter bounds for this path.
-- Make `fit_ou(trajectory)` dispatch to automatic profile estimation. Route existing three-argument calls explicitly to the joint path. Reject mixed configurations.
+- Preserve `fit_ou_joint` as an explicit joint optimizer. Starts and bounds are independently optional; omitted bounds do not introduce arbitrary finite parameter limits.
+- `fit_ou(trajectory)` dispatches to automatic profile estimation. Either initial parameters or three-parameter bounds selects the joint path; all eight combinations with optional alpha bounds are supported. Intersect overlapping alpha ranges and reject contradictory inputs, not mixed configurations themselves.
 - Keep `_ou_objective` and `_initial_ou_parameters` for the joint path; neither is a bounds generator.
 - Encourage named fields: `mean_reversion`, `long_run_mean`, `volatility`, `fun`, `method`, and diagnostics. Add named physical parameter fields to joint results.
 - Do not silently change joint `x=[log(alpha),mu,log(sigma)]` into physical parameters; profile `x` remains physical alpha. Document the distinction in the README. Consider a new result type only through a separate versioned migration.
@@ -123,9 +124,9 @@ Acceptance: regression tests cover both existing calls and the new default; the 
 
 | Planned or updated file | Functions/entry points and objectives |
 | --- | --- |
-| `tests/test_ou_auto_fit.py`, new | `test_auto_fit_matches_manual_interior`, `test_auto_fit_time_rescaling`, `test_auto_fit_boundary_diagnostics`, `test_auto_fit_budget_exhaustion`, `test_manual_bounds_are_respected`, `test_auto_fit_rejects_degenerate_data`: cover the contracts above, parameterizing data cases where useful. |
-| `tests/test_ou_profile_fit.py`, `test_ou_estimation.py`, `test_ou_limits.py` | Preserve analytical references, legacy calls, and both boundary regressions; avoid testing only the implementation against itself. |
-| `experiments/experiment_ou_profile.py` | Extend the existing entry point to compare automatic/manual ranges and diagnostics rather than adding another set of similar experiments. |
+| `tests/estimation/test_ou_profile_fit.py`, existing | Existing tests cover automatic search, boundary states, budgets, input validation, and independent MLE references. Audit full-fit time rescaling and remaining numerical edge cases before claiming all A1 acceptance criteria; no separate auto-fit test file is required. |
+| `tests/estimation/test_ou_profile_fit.py`, `test_ou_estimation.py`, `test_ou_limits.py` | Preserve analytical references, legacy calls, and both boundary regressions; avoid testing only the implementation against itself. |
+| `experiments/experiment_ou_interface.py`, `experiment_ou_profile.py` | The interface experiment compares eight input combinations; retain the profile experiment for score curves and restrictive-range diagnostics. Do not add further overlapping scalar demos. |
 | `README.md` | Provide default and manual examples, assumptions, and result-status semantics. |
 
 Exit A when relevant tests and the full suite pass, automatic calls and diagnostics are reproducible, and documentation separates numerical from statistical conclusions. Proceed to B.
@@ -315,11 +316,12 @@ Mathematical checkpoint: aggregates are derived observations. A joint group-fact
 
 ## 10. Execution and Change Log
 
-Current checkpoint: v019 contains both boundary experiments and regression tests; A1 has not started. Follow dependencies rather than skipping mathematical checks to meet dates. Do not promise exact research-function counts or completion dates without supporting evidence.
+Current checkpoint: v023 contains unified automatic/bounded profile fitting. The working tree adds flexible joint inputs, top-level exports, and the eight-combination experiment for the intended v024 commit. Scalar closeout is at A3; graph inference is not implemented. Follow dependencies rather than skipping mathematical checks to meet dates. Do not promise exact research-function counts or completion dates without supporting evidence.
 
 | Date | Task | Status/evidence | Next step |
 | --- | --- | --- | --- |
 | 2026-09-30 | Planning baseline | Inventory checked against v019, actual functions, and README; documentation-only changes | A1: document search rules and result states mathematically and algorithmically, then implement `_initial_ou_alpha_bounds` |
+| 2026-10-01 | A1–A3 implementation checkpoint, intended v024 (not yet committed) | Flexible `fit_ou`, explicit `fit_ou_joint`, top-level exports, and interface experiment present. `.venv/bin/python -m pytest -q`: 219 passed. Headless interface experiment reproduced all eight successful fits and maximum NLL difference about 2.12e-8. | Finish the remaining A acceptance audit, then begin B matrix derivation; no new scalar-model scope. |
 
 Documentation maintenance on 2026-09-30: replaced the Chinese plan with this English version and moved detailed scalar API, mathematical, and evaluation references from the README into the appendices. No source-code changes.
 
@@ -332,7 +334,7 @@ After each task, append its commit or files, test commands and results, experime
 
 ## Appendix A. Current Scalar API and Experiment Reference
 
-Moved from the README to keep implementation details in one place. This appendix describes the current v019 API, not the planned automatic interface in stage A. Run commands from the repository root. The scalar `trajectory` used in the profile snippet must already exist.
+Moved from the README to keep implementation details in one place. This appendix describes the current working-tree API, including the interface changes intended for v024. Run commands from the repository root. The scalar `trajectory` used in the profile snippet must already exist.
 
 ### Scalar Brownian Drift Estimation
 
@@ -368,74 +370,88 @@ This estimator does not add a drift argument to `simulate_brownian`, which still
 
 ### Scalar OU Fitting and Experiment
 
-The current estimator assumes a complete trajectory of shape `(T, 1, 1)`, exact observations without measurement noise, and constant scalar OU parameters. It conditions on the first observation and supports unequal time intervals. It does not infer inter-node relationships or reconstruct missing states.
-
-| Function in `dynsample.estimation.ou` | Purpose |
-| --- | --- |
-| `ou_negative_log_likelihood` | Score supplied positive `mean_reversion` and `volatility`, with a finite `long_run_mean`, against the observed transitions. |
-| `fit_ou` | Minimize that score using L-BFGS-B in `(log(alpha), mu, log(sigma))` coordinates. |
-| `fit_ou_profile` | Search over `log(alpha)` within supplied alpha bounds, analytically optimizing mu and sigma for each candidate alpha. |
-| `_initial_ou_parameters` | Internal heuristic starting values; not a parameter estimate or a public API guarantee. |
-| `_ou_objective` | Internal conversion from optimizer coordinates to model parameters. |
-
-`fit_ou` currently requires `trajectory`, `initial_parameters`, and `parameter_bounds`. Pass `initial_parameters=None` to generate a starting guess automatically. Bounds are three finite `(lower, upper)` pairs in `(alpha, mu, sigma)` order; alpha and sigma bounds must be positive. Automatic starts must lie within the supplied bounds. A constant trajectory is rejected by the initializer. Optional bounds, adaptive search, and automatic multiple starts are not implemented yet.
-
-The SciPy `OptimizeResult` returned by `fit_ou` contains:
-
-- `x`: optimizer coordinates, **not** physical OU parameters; recover alpha with `exp(x[0])`, mu with `x[1]`, and sigma with `exp(x[2])`;
-- `fun`: final conditional negative log-likelihood;
-- `success` and `message`: numerical stopping status, not guarantees of a global optimum or accurate parameter recovery.
-
-Run `python experiments/experiment_ou_estimation.py` after installation. The experiment generates 1,001 observations over 100 time units with alternating intervals of 0.05 and 0.15. It reports true, initial, and fitted parameters; initial and final scores; optimizer status; and proximity to its explicitly supplied search bounds.
-
-The figure has three panels:
-
-1. Observations and fitted one-step conditional means, each using the previous observed state.
-2. In-sample standardized residuals: observation minus its fitted one-step mean, divided by its transition standard deviation.
-3. Five new trajectories under fixed fitted parameters, plus the conditional mean given only the initial state.
-
-Close agreement of one-step means with densely sampled observations is not a long-horizon forecast validation. Residual variance near one is partly enforced by fitting the noise scale and is not independent evidence of model adequacy. New simulated paths are not reconstructions of the original path and do not include parameter uncertainty.
-
-Tests include a hand-calculated irregular-time likelihood, invalid inputs, coordinate conversion, automatic initialization, and comparison with an independent regular-grid conditional MLE obtained through AR(1) least squares. Repeated-seed recovery experiments, held-out prediction checks, and sensitivity to search settings remain future validation work. R1 graph estimation is not yet complete.
-
-#### Profile likelihood fitting
-
-For fixed positive alpha, the internal helpers `_profile_ou_mu` and `_profile_ou_sigma` calculate the conditional maximum-likelihood mu and sigma. `_profile_ou_negative_log_likelihood` scores those parameters. This eliminates two numerical search dimensions; it does not change the conditional likelihood or add Bayesian inference.
+OU estimators use complete, exact scalar observations `(T,1,1)`, constant parameters, and a likelihood conditional on the initial observation. Unequal time intervals are supported. They do not estimate graph relationships, handle measurement noise, or reconstruct missing states. Profile scanning requires at least three observations; joint likelihood evaluation permits two but such a small sample does not generally support reliable estimation of three parameters.
 
 ```python
-from dynsample.estimation.ou import fit_ou_profile
+import dynsample as ds
 
-## trajectory is an existing complete scalar Trajectory.
-result = fit_ou_profile(trajectory, alpha_bounds=(0.001, 5.0))
+# trajectory is an existing complete scalar Trajectory.
+result = ds.fit_ou(trajectory)
 print(result.mean_reversion, result.long_run_mean, result.volatility)
-print(result.fun)
+print(result.method, result.success, result.message)
 ```
 
-The bounds above are an example, not universal defaults. `alpha_bounds` is required and must contain two finite values satisfying `0 < lower < upper`. No initial parameters or mu/sigma bounds are required. Zero residual variance is rejected because there is no positive-volatility interior maximum in that case.
+#### Inputs and method selection
 
-Unlike `fit_ou`, this result's `x` is the **physical scalar alpha**. `log_alpha` retains its search coordinate; `mean_reversion`, `long_run_mean`, and `volatility` expose all three physical parameters. `fun` is the conditional negative log-likelihood and `alpha_bounds` records the supplied range. Failed or non-finite optimization results raise an error.
+| initial_parameters | parameter_bounds | alpha_bounds | Method |
+| --- | --- | --- | --- |
+| omitted | omitted | omitted | Automatic profile search |
+| supplied | omitted | omitted | Joint optimization without explicit bounds |
+| omitted | supplied | omitted | Joint optimization with an automatic start |
+| omitted | omitted | supplied | Profile search within supplied bounds |
+| supplied | supplied | omitted | Joint optimization with supplied start and bounds |
+| supplied | omitted | supplied | Joint optimization with only alpha constrained |
+| omitted | supplied | supplied | Joint optimization with an automatic start and intersected alpha ranges |
+| supplied | supplied | supplied | Joint optimization with supplied start and intersected alpha ranges |
 
-The profile result also reports proximity to the supplied search boundaries:
+`initial_parameters` is `None` or a finite `(alpha, mu, sigma)` tuple, with alpha and sigma strictly positive. It supplies a starting guess, not fixed parameters. Partial tuples containing `None` are not supported.
 
-| Field | Meaning |
+`parameter_bounds` is `None` or three `(lower, upper)` pairs in alpha, mu, sigma order. Bounds must be ordered and contain no NaN. Infinite endpoints are supported: mu may be unbounded, and zero lower bounds for alpha/sigma map to negative infinity in log coordinates while physical fitted parameters remain positive. Negative alpha/sigma lower bounds are rejected. Individual pairs or endpoints expressed as `None` are not supported.
+
+`alpha_bounds` is keyword-only and, when supplied, contains two finite values with `0 < lower < upper`. If both bounds options are present, use their alpha-range intersection; no interval in common is an error. Automatic initial values are clipped into supplied joint bounds. Explicit initial values outside the effective bounds are rejected. `initial_was_adjusted` records automatic adjustment on joint results.
+
+```python
+result = ds.fit_ou(
+    trajectory,
+    initial_parameters=(0.7, 10.0, 1.5),
+    parameter_bounds=((0.01, 5.0), (-20.0, 20.0), (0.1, 5.0)),
+    alpha_bounds=(0.1, 2.0),
+)
+```
+
+Direct `ds.fit_ou_profile(trajectory, alpha_bounds=None)` selects profile fitting. Direct `ds.fit_ou_joint(trajectory, initial_parameters=None, parameter_bounds=None)` selects joint fitting. Supplying initial values to the dispatcher changes the algorithm, so results need not be identical on every dataset. Joint optimization is local and may fail with extreme unbounded trial parameters; optional inputs do not imply a global-optimum guarantee or automatic multiple starts.
+
+#### Return values
+
+Both paths expose `mean_reversion`, `long_run_mean`, `volatility`, `fun`, `success`, and `message`. The dispatcher adds `method` (`profile` or `joint`). Use named physical parameters rather than assuming a common `x` shape:
+
+- Profile: `x` is physical scalar alpha; `log_alpha` records its log coordinate.
+- Joint: `x` retains `(log(alpha), mu, log(sigma))` for compatibility. `initial_parameters` records the actual start and `initial_was_adjusted` reports clipping of an automatic start.
+
+Profile results include `alpha_bounds`, `searched_alpha_bounds`, `alpha_search_position`, `boundary_fraction`, `near_lower_bound`, and `near_upper_bound`. Position is normalized within the log-alpha interval; the proximity threshold is 1% of its width. For automatic searches, `alpha_bounds` belongs to the retained best candidate's search round, whereas `searched_alpha_bounds` is the final explored range. These ranges can differ.
+
+#### Automatic search and stopping states
+
+Automatic profile search starts from `0.01/T` and `-log(0.01)/min(dt)`. It scans 65 log-spaced points per round, refines candidate intervals, and expands eligible sides by a factor of ten, for at most six expansions. These are internal defaults, not statistical confidence bounds. An absolute NLL tolerance of `1e-6` is used for comparison with boundary limits; it is not a significance threshold or a proven error bound. Explicit profile bounds are never expanded.
+
+| Profile status | Meaning |
 | --- | --- |
-| `alpha_search_position` | `(log_alpha - log(lower)) / (log(upper) - log(lower))`; position within the **log-alpha** range. |
-| `boundary_fraction` | Fixed threshold of `0.01` (1% of the log-alpha range). |
-| `near_lower_bound` | True when `alpha_search_position <= 0.01`. |
-| `near_upper_bound` | True when `alpha_search_position >= 0.99`. |
+| `interior_candidate` | Search completed with an interior candidate under the current stopping rules. |
+| `bounded_candidate` | Explicit-range search completed near a supplied boundary. |
+| `boundary_limit` | Automatic search stopped near a boundary with a numerically similar limit score. |
+| `incomplete_search` | Some evaluations/refinements failed; a finite candidate is retained. |
+| `expansion_limit` | Expansion budget exhausted. |
+| `numerical_limit` | Further range expansion would exceed usable floating-point values. |
 
-These flags describe search-range proximity. They do not detect a flat profile, establish identifiability, or provide confidence intervals. A successful fit can still trigger a boundary flag; inspect the profile and sensitivity to scientifically reasonable alternative bounds. The fitter does not automatically expand its range.
+Automatic results set `success=True` only for `interior_candidate`. Manual profile results can report success for `bounded_candidate`; success means the search completed within the supplied constraints. Joint `status` and `message` retain SciPy optimizer semantics. None of these establishes parameter accuracy or calibrated uncertainty.
+
+Automatic profile results retain `history`, `best_search`, `boundary_scores`, `expansions`, and diagnostics. A boundary NLL gap is `boundary NLL - candidate NLL`: negative means the boundary reference scores better. Boundary references are limiting models, not finite OU parameter estimates. Diagnostics attached to the best round do not override the overall stopping state. Degenerate boundary variances raise errors, and an all-failed scan raises `RuntimeError`; not every failure is returned as a result object.
+
+#### Experiments and interpretation
 
 ```bash
-python -m pytest tests/test_ou_profile_fit.py tests/test_ou_estimation.py -q
+python -m pytest tests/estimation/test_ou_profile_fit.py tests/estimation/test_ou_estimation.py -q
+python -m experiments.experiment_ou_interface
+python -m experiments.experiment_ou_interface --no-show --save /tmp/ou_interface.png
 python -m experiments.experiment_ou_profile
-## Save the figure without opening a window:
-python -m experiments.experiment_ou_profile --no-show --save /tmp/ou_profile.png
+python -m experiments.experiment_ou_estimation
 ```
 
-The profile experiment first reports fits and boundary flags for alpha ranges `(0.01, 0.3)`, `(0.01, 5.0)`, and `(0.001, 10.0)`, illustrating a restrictive upper bound and sensitivity to wider ranges. It then compares joint and profile fitting on the same irregularly sampled trajectory using `(0.001, 5.0)`. It displays the observations and a log-alpha profile score curve, with the true and fitted alpha marked. In the seed-42 example, both methods return approximately `(0.8646, 9.7985, 1.4937)` with NLL `554.53474842`. Agreement verifies this example, not universal parameter accuracy. The joint method additionally constrains mu and sigma; agreement is not expected when those constraints exclude the profile optimum.
+The interface experiment uses one seed-42 trajectory with 1,001 observations, alternating intervals 0.05/0.15, and duration 100. It compares all eight input combinations, prints physical parameters, NLL differences and stopping messages, and plots three parameter comparisons plus NLL differences. The observed example returned approximately `(0.86458, 9.79848, 1.49371)` in every case, with maximum NLL difference about `2.12e-8`. This demonstrates numerical agreement on one dataset. It does not establish global optimality, repeated-sample accuracy, or agreement when bounds exclude the unconstrained optimum. Plot colors indicate reported optimizer success only.
 
-Validation includes hand-derived regular and irregular profile scores, independent numerical optimization of the nuisance parameters, and an independent AR(1) conditional-MLE reference for the complete fit. A plotted finite grid and successful bounded optimization do not prove global optimality. Boundary-flag tests cover interior, lower-bound, and upper-bound fits. Automatic range selection, flat-profile diagnostics, and calibrated parameter intervals remain unimplemented. The experiment does not perform missing-value reconstruction or held-out forecasting.
+The profile experiment compares restrictive and wider ranges and displays a log-alpha score curve. The estimation experiment plots fitted one-step means, in-sample standardized residuals, and new simulations under fixed fitted parameters. One-step agreement is not long-horizon forecast validation; residual variance near one is partly enforced by fitted noise scale. New simulations neither reconstruct the observed path nor include parameter uncertainty.
+
+Independent regular-grid AR(1) MLE references, irregular-time likelihood checks, boundary regressions, input combinations, and failure handling are tested. Full-fit time-rescaling audits, repeated-seed recovery, held-out prediction, and search-setting sensitivity should not be claimed from a single passing experiment. Calibrated parameter intervals and graph estimation remain outside the current implementation.
 
 ## Appendix B. Mathematical and Modeling Reference
 
