@@ -322,92 +322,145 @@ def _initial_ou_alpha_bounds(
 # Fit OU parameters by optimizing log(alpha) within supplied bounds and profiling out mu and sigma.
 def fit_ou_profile(
     trajectory: Trajectory,
-    alpha_bounds: tuple[float, float]
+    alpha_bounds: tuple[float, float] | None = None,
 ) -> OptimizeResult:
-    bounds = np.asanyarray(alpha_bounds, dtype = np.float64)
-
-    if bounds.shape != (2,):
-        raise ValueError(
-            "alpha_bounds must contain a lower and an upper bound"
+    if alpha_bounds is None:
+        result = _search_ou_profile_auto(
+            trajectory = trajectory,
         )
 
-    if not np.all(np.isfinite(bounds)):
-        raise ValueError(
-            "alpha bounds must be finite"
-        )
+        alpha = float(result.x)
 
-    lower, upper = bounds
-
-    if lower <= 0.0 or upper <= lower:
-        raise ValueError(
-            "alpha bounds must satisfy 0 < lower < upper"
-        )
-
-    log_lower = float(np.log(lower))
-    log_upper = float(np.log(upper))
-
-    def objective(log_alpha: float) -> float:
-        alpha = float(np.exp(log_alpha))
-
-        return _profile_ou_negative_log_likelihood(
-            trajectory =trajectory,
+        mu = _profile_ou_mu(
+            trajectory = trajectory,
             mean_reversion = alpha,
         )
 
-    result = minimize_scalar(
-        fun = objective,
-        bounds = (log_lower, log_upper),
-        method = "bounded",
-        options = {"xatol": 1e-8},
+        sigma = _profile_ou_sigma(
+            trajectory = trajectory,
+            mean_reversion = alpha,
+        )
+
+        diagnostics = _diagnose_ou_search(
+            search = result.best_search,
+            boundary_scores = result.boundary_scores,
+        )
+
+        result.log_alpha = float(np.log(alpha))
+        result.mean_reversion = alpha
+        result.long_run_mean = mu
+        result.volatility = sigma
+
+        result.alpha_bounds = diagnostics.alpha_bounds
+        result.alpha_search_position = (
+            diagnostics.alpha_search_position
+        )
+        result.boundary_fraction = diagnostics.boundary_fraction
+        result.near_lower_bound = diagnostics.near_lower_bound
+        result.near_upper_bound = diagnostics.near_upper_bound
+
+        result.diagnostics = diagnostics
+
+        final_scan = result.history[-1].search.scan
+        result.searched_alpha_bounds = (
+            float(final_scan.alphas[0]),
+            float(final_scan.alphas[-1]),
+        )
+
+        messages = {
+            "interior_candidate": (
+                "Automatic search found an interior candidate."
+            ),
+            "boundary_limit": (
+                "Search stopped near a boundary limit; "
+                "finite OU parameters remain provisional."
+            ),
+            "incomplete_search": (
+                "Search was incomplete; returning the best finite candidate."
+            ),
+            "expansion_limit": (
+                "Search reached the expansion limit; "
+                "returning the best finite candidate."
+            ),
+            "numerical_limit": (
+                "Search reached the numerical range limit; "
+                "returning the best finite candidate."
+            ),
+        }
+
+        result.message = messages[result.status]
+
+        return result
+
+    bounds = np.asanyarray(alpha_bounds, dtype = np.float64)
+
+    search = _search_ou_profile(
+        trajectory = trajectory,
+        alpha_bounds = alpha_bounds,
     )
 
-    if not result.success:
-        raise RuntimeError(
-            f"profile optimization failed: {result.message}"
-        )
+    result = OptimizeResult(search)
 
-    if not np.isfinite(result.x) or not np.isfinite(result.fun):
-        raise RuntimeError(
-            "profile optimization produced a non-finite result"
-        )
-
-    alpha = float(np.exp(result.x))
+    alpha = float(result.x)
 
     mu = _profile_ou_mu(
         trajectory = trajectory,
         mean_reversion = alpha,
     )
 
-    sigma = _profile_ou_sigma(
+    sigma =_profile_ou_sigma(
         trajectory = trajectory,
         mean_reversion = alpha,
     )
 
-    result.log_alpha = float(result.x)
-    result.x = alpha
-    result.mean_reversion = alpha
-    result.long_run_mean = mu
-    result.volatility =sigma
-    result.alpha_bounds = (float(lower), float(upper))
+    lower = float(search.scan.alphas[0])
+    upper = float(search.scan.alphas[-1])
 
-    log_width = log_upper - log_lower
+    log_alpha = float(np.log(alpha))
+    log_lower = float(np.log(lower))
+    log_upper = float(np.log(upper))
 
-    relative_position = (
-        result.log_alpha - log_lower
-    ) / log_width
+    position = (
+        (log_alpha - log_lower)
+        / (log_upper - log_lower)
+    )
 
     boundary_fraction = 0.01
 
-    result.alpha_search_position = float(relative_position)
-    result.boundary_fraction =boundary_fraction
+    result.log_alpha = log_alpha
+    result.mean_reversion = alpha
+    result.long_run_mean = mu
+    result.volatility = sigma
 
+    result.alpha_bounds = (lower, upper)
+    result.searched_alpha_bounds = (lower, upper)
+    result.alpha_search_position = float(position)
+    result.boundary_fraction = boundary_fraction
     result.near_lower_bound = bool(
-        relative_position <= boundary_fraction
+        position <= boundary_fraction
+    )
+    result.near_upper_bound = bool(
+        position >= 1.0 - boundary_fraction
     )
 
-    result.near_upper_bound = bool(
-        relative_position >= 1.0 -boundary_fraction
-    )
+    if not result.success:
+        result.status = "incomplete_search"
+        result.message = (
+            "Search was incomplete; returning the best finite candidate "
+            "within the supplied bounds."
+        )
+    elif result.near_lower_bound or result.near_upper_bound:
+        result.status = "bounded_candidate"
+        result.message = (
+            "Search completed near a supplied boundary; "
+            "the bounds were not expanded."
+        )
+    else:
+        result.status = "interior_candidate"
+        result.message = (
+            "Search completed with an interior candidate "
+            "within the supplied bounds."
+        )
 
     return result
 

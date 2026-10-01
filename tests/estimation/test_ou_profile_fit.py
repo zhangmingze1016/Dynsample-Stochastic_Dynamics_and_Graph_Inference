@@ -8,6 +8,103 @@ from dynsample.core.trajectory import Trajectory
 from dynsample.estimation import ou
 
 
+def test_profile_fit_without_bounds_matches_independent_mle() -> None:
+    rng = np.random.default_rng(42)
+    values = np.empty(401)
+    values[0] = -3.0
+    for i in range(1, values.size):
+        values[i] = 0.8 * values[i - 1] - 0.6 + 0.5 * rng.standard_normal()
+    dt = 0.25
+    trajectory = Trajectory(
+        times=np.arange(values.size) * dt,
+        values=values[:, None, None],
+    )
+    original_values = trajectory.values.copy()
+    original_times = trajectory.times.copy()
+    design = np.column_stack((values[:-1], np.ones(values.size - 1)))
+    phi, intercept = np.linalg.lstsq(design, values[1:], rcond=None)[0]
+    residual = values[1:] - design @ np.array([phi, intercept])
+    q = np.mean(residual**2)
+    alpha = -np.log(phi) / dt
+    expected = [
+        alpha,
+        intercept / (1.0 - phi),
+        np.sqrt(2.0 * alpha * q / (1.0 - phi**2)),
+    ]
+
+    result = ou.fit_ou_profile(trajectory)
+
+    assert result.success
+    assert result.status == "interior_candidate"
+    np.testing.assert_allclose(
+        [result.mean_reversion, result.long_run_mean, result.volatility],
+        expected, rtol=1e-5, atol=1e-6,
+    )
+    np.testing.assert_allclose(result.x, result.mean_reversion)
+    np.testing.assert_allclose(np.exp(result.log_alpha), result.mean_reversion)
+    np.testing.assert_allclose(
+        result.fun,
+        ou.ou_negative_log_likelihood(
+            trajectory, result.mean_reversion, result.long_run_mean, result.volatility
+        ),
+        rtol=0.0, atol=1e-7,
+    )
+    assert result.message
+    assert result.searched_alpha_bounds[0] <= result.x <= result.searched_alpha_bounds[1]
+    np.testing.assert_array_equal(trajectory.values, original_values)
+    np.testing.assert_array_equal(trajectory.times, original_times)
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["boundary_limit", "incomplete_search", "expansion_limit", "numerical_limit"],
+)
+def test_profile_fit_preserves_auto_status_and_distinct_search_ranges(
+    monkeypatch, status,
+) -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0, 2.0]),
+        values=np.array([1.0, 4.0, 3.0])[:, None, None],
+    )
+    score = ou._profile_ou_negative_log_likelihood(trajectory, 1.0)
+    best = OptimizeResult(
+        x=1.0, fun=score, success=True,
+        scan=OptimizeResult(alphas=np.array([0.1, 10.0])),
+    )
+    last = OptimizeResult(
+        x=2.0, fun=score + 1.0, success=(status != "incomplete_search"),
+        scan=OptimizeResult(alphas=np.array([0.01, 100.0])),
+    )
+    automatic = OptimizeResult(
+        x=1.0, fun=score, success=False, status=status,
+        best_search=best,
+        boundary_scores={
+            "brownian": OptimizeResult(fun=score + 2.0),
+            "gaussian": OptimizeResult(fun=score + 3.0),
+        },
+        history=[OptimizeResult(search=best), OptimizeResult(search=last)],
+        expansions=1,
+    )
+    monkeypatch.setattr(ou, "_search_ou_profile_auto", lambda trajectory: automatic)
+
+    result = ou.fit_ou_profile(trajectory)
+
+    assert not result.success
+    assert result.status == status
+    assert result.message
+    assert result.alpha_bounds == (0.1, 10.0)
+    assert result.searched_alpha_bounds == (0.01, 100.0)
+    assert result.x == result.mean_reversion == 1.0
+    assert np.isfinite(result.long_run_mean)
+    assert result.volatility > 0.0
+    np.testing.assert_allclose(
+        result.fun,
+        ou.ou_negative_log_likelihood(
+            trajectory, result.mean_reversion, result.long_run_mean, result.volatility
+        ),
+    )
+
+
 @pytest.fixture
 def auto_search_case(monkeypatch):
     """Control search outputs while retaining the real boundary diagnostics."""
@@ -321,8 +418,14 @@ def test_profile_fit_rejects_degenerate_data() -> None:
         times=np.array([0.0, 0.3, 2.0]),
         values=np.zeros((3, 1, 1)),
     )
-    with pytest.raises(ValueError, match="zero residual variance"):
-        ou.fit_ou_profile(trajectory, alpha_bounds=(0.01, 5.0))
+    with pytest.raises(
+        RuntimeError,
+        match="all profile grid evaluations failed.*zero residual variance",
+    ):
+        ou.fit_ou_profile(
+            trajectory,
+            alpha_bounds=(0.01, 5.0),
+        )
 
 @pytest.mark.parametrize(
     "bounds, expected_lower, expected_upper",
