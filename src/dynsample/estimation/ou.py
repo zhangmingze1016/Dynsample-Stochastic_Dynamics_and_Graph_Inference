@@ -2,6 +2,7 @@ import numpy as np
 from dynsample.core.trajectory import Trajectory
 from dynsample.simulation.ou import ou_transition
 from scipy.optimize import OptimizeResult, minimize, minimize_scalar
+from dynsample.estimation.brownian import fit_brownian_drift
 
 def ou_negative_log_likelihood(
         trajectory: Trajectory,
@@ -260,6 +261,57 @@ def _profile_ou_negative_log_likelihood(
 
     return float(score)  
 
+def _initial_ou_alpha_bounds(
+    trajectory: Trajectory,
+) -> tuple[float, float]:
+    """Choose an initial alpha search range from observation times."""
+    if trajectory.values.shape[1:] != (1, 1):
+        raise ValueError(
+            "trajectory must contain one node and one feature"
+        )
+
+    times = trajectory.times
+
+    if times.size < 2:
+        raise ValueError(
+            "trajectory must contain at least two time points"
+        )
+
+    with np.errstate(over = "ignore", invalid = "ignore"):
+        dt = np.diff(times)
+        duration = times[-1] - times[0]
+
+    if not np.all(np.isfinite(dt)) or np.any(dt <= 0.0):
+        raise ValueError(
+            "time intervals must be finite and positive"
+        )
+
+    if not np.isfinite(duration) or duration <= 0.0:
+        raise ValueError(
+            "time span must be finite and positive"
+        )
+
+    min_dt = np.min(dt)
+
+    slow_reversion_scale = 0.01
+    fast_memory_fraction = 0.01
+
+    with np.errstate(over = "ignore", under = "ignore", invalid = "ignore"):
+        lower = slow_reversion_scale / duration
+        upper = -np.log(fast_memory_fraction) / min_dt
+
+    if not np.all(np.isfinite([lower, upper])):
+        raise ValueError(
+            "initial alpha bounds must be finite"
+        )
+
+    if lower <= 0.0 or upper <= lower:
+        raise ValueError(
+            "initial alpha bounds must satisfy 0 < lower < upper"
+        )
+
+    return float(lower), float(upper)
+
 def fit_ou_profile(
     trajectory: Trajectory,
     alpha_bounds: tuple[float, float]
@@ -350,6 +402,173 @@ def fit_ou_profile(
     )
 
     return result
+
+def _ou_boundary_scores(
+    trajectory: Trajectory,
+) -> dict[str, OptimizeResult]:
+
+    brownian = fit_brownian_drift(trajectory)
+
+    targets = trajectory.values[1:, 0, 0]
+    n = targets.size
+
+    with np.errstate(over = "ignore", invalid = "ignore"):
+        mean =float(np.mean(targets))
+        variance = float(np.mean((targets - mean) ** 2))
+
+    if not np.isfinite(mean):
+        raise ValueError(
+            "Gaussian boundary mean must be finite"
+        )
+
+    if not np.isfinite(variance) or variance <= 0.0:
+        raise ValueError(
+            "Gaussian boundary variance must be finite and positive"
+        )
+
+    score = float(
+        0.5 * n * (
+            np.log(2.0 * np.pi)
+            + np.log(variance)
+            + 1.0
+        )
+    )
+
+    if not np.isfinite(score):
+        raise ValueError(
+            "Gaussian boundary negative log-likelihood must be finite"
+        )
+
+    gaussian = OptimizeResult(
+        mean = mean,
+        variance = variance,
+        fun = score,
+        success = True,
+        message = "Closed-form independent Gaussian boundary estimate.",
+    )
+
+    return {
+        "brownian": brownian,
+        "gaussian": gaussian
+    }
+
+def _scan_ou_profile(
+    trajectory: Trajectory,
+    alpha_bounds = tuple[float, float],
+    grid_size: int = 65,
+) -> OptimizeResult:
+    """Scan the OU profile on a logarithmic alpha grid."""
+
+    if trajectory.values.shape[1:] != (1, 1):
+        raise ValueError(
+            "trajectory must contain one node and one feature"
+        )
+
+    if trajectory.times.size < 3:
+        raise ValueError(
+            "trajectory must contain at least three time points"
+        )
+
+    bounds = np.asanyarray(alpha_bounds, dtype = np.float64)
+
+    lower, upper = bounds
+
+    if lower <= 0.0 or upper <= lower:
+        raise ValueError(
+            "alpha bounds must satisfy 0 < lower < upper"
+        )
+
+    if (
+        isinstance(grid_size, bool)
+        or not isinstance(grid_size, (int, np.integer))
+        or grid_size < 3
+    ):
+        raise ValueError(
+            "grid_size must be an integer of at least three"
+        )
+
+    log_alphas = np.linspace(
+        np.log(lower),
+        np.log(upper),
+        grid_size,
+    )
+    alphas = np.exp(log_alphas)
+    alphas[0], alphas[-1] = lower, upper
+
+    scores = np.full(grid_size, np.nan)
+    failures = {}
+
+    for i, alpha in enumerate(alphas):
+        try:
+            with np.errstate(
+                over = "raise",
+                divide = "raise",
+                invalid= "raise",
+                under = "ignore"
+            ):
+                score = ou_score = _profile_ou_negative_log_likelihood(
+                    trajectory,
+                    float(alpha)
+                )
+
+            if not np.isfinite(score):
+                raise ValueError(
+                    "profile score must be finite"
+                )
+
+            scores[i] = score
+
+        except (ValueError, FloatingPointError) as error:
+            failures[i] = str(error)
+
+    valid = np.isfinite(scores)
+    valid_indices = np.flatnonzero(valid)
+
+    if valid_indices.size == 0:
+        raise RuntimeError(
+            "all profile grid evaluations failed; "
+            f"first failure: {failures[0]}"
+        )
+
+    best_index = int(
+        valid_indices[np.argmin(scores[valid_indices])]
+    )
+
+    candidate_intervals = []
+
+    for i in range(1, grid_size - 1):
+        if not np.all(valid[i - 1: i + 1]):
+            continue
+        
+        left_score, center_score, right_score = scores[i - 1:i + 2]
+
+        if (
+            center_score <= left_score
+            and center_score <= right_score
+            and (
+                center_score < left_score
+                or center_score < right_score
+            )
+        ):
+            candidate_intervals.append(
+                (
+                    float(alphas[i - 1]),
+                    float(alphas[i + 1]),
+                )
+            )
+
+    return OptimizeResult(
+        alphas = alphas,
+        scores = scores,
+        valid = valid,
+        failures = failures,
+        best_index = best_index,
+        best_alpha = float(alphas[best_index]),
+        best_score = float(scores[best_index]),
+        candidate_intervals = candidate_intervals,
+        complete = bool(np.all(valid)),
+        nfev = int(grid_size),
+    )
 
 def fit_ou(
         

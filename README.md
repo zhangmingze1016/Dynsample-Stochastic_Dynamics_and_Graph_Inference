@@ -115,8 +115,8 @@ The goal is a reusable scientific and engineering tool, starting with complete o
 
 | Milestone | Planned objective |
 | --- | --- |
-| R1 | Static graph estimation from complete observations, with parameter and predictive validation. |
-| R2 | Piecewise-changing relationships and change diagnostics. |
+| R1 | Static graph estimation from complete observations, with validation and a late-stage automatic grouping/aggregate-view prototype. |
+| R2 | Piecewise-changing relationships, dynamic group tracking, and hierarchical computation benchmarks. |
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 

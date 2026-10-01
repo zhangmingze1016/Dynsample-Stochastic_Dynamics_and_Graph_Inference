@@ -13,8 +13,8 @@ Scalar OU closeout (A)
   -> Graph semantics and matrix transitions (B)
   -> Parameter inference with known structure (C)
   -> Unknown sparse graph inference (D)
-  -> R1 validation and release (E)
-  -> R2 time-varying graphs (F)
+  -> R1 validation and release, with static hierarchy prototype (E, I1)
+  -> R2 time-varying graphs and hierarchy tracking (F, I2–I3)
   -> R3 missing/noisy/asynchronous observations (G)
   -> R4 reliability evaluation (H)
 ```
@@ -198,6 +198,8 @@ Acceptance: record configurations and evaluation procedures in advance; report r
 | `experiments/experiment_brownian_bridge.py` | Clean entry point and optional logging; address queue efficiency only as needed without delaying graph inference. |
 | Release record in this document | Record the full suite, clean installation, documentation examples, experiment summaries, resource measurements, and limitations. |
 
+Stage E also includes the bounded automatic static hierarchy prototype in I1. Dynamic group tracking and computational savings remain early-R2 tasks, not assumed R1 capabilities.
+
 R1 is complete when an external user can supply a complete multivariate node time series, fit a static graph, read weights/directions/diagnostics, and reproduce experiments. Simulation and a plot window alone are insufficient. Determine supported node counts through measurements rather than promising scale or accuracy in advance.
 
 ## 8. F–H: R2–R4 File and Function Objectives
@@ -214,7 +216,7 @@ These are responsibility-based design targets, not frozen signatures. At each st
 | `tests/test_piecewise.py`, `test_dynamic_graph.py` | Tests organized by these contracts | Cover boundary-crossing transitions, no change, noise-only change, and actual drift change. |
 | `experiments/experiment_dynamic_graph.py` | `main` | Evaluate abrupt and gradual changes, recording graph recovery, detection delay, and prediction. |
 
-Acceptance: do not automatically interpret noise changes as graph changes. Compare against the rolling baseline; animation is not validation. Analyze nonconvex fused objectives and insufficient window information before proceeding. Depends on R1.
+Acceptance: do not automatically interpret noise changes as graph changes. Compare against the rolling baseline; animation is not validation. Analyze nonconvex fused objectives and insufficient window information before proceeding. Depends on R1. Pair the first rolling baseline with I2 dynamic group tracking and I3 scaling experiments; these precede more elaborate joint temporal optimization.
 
 ### G / R3: Missing Data, Measurement Noise, and Asynchronous Sampling
 
@@ -244,10 +246,69 @@ Acceptance: name reliability measures separately rather than combining them into
 
 Package paths in the F–H tables are relative to `src/dynsample/`; `tests/` and `experiments/` paths are relative to the repository root.
 
+### I. Automatic Hierarchy — Late R1 Prototype and Early R2 Extension
+
+Scope revision requested on 2026-09-30: groups must be discovered from observed dynamics, not require user-supplied domain labels. Introduce a bounded automatic grouping and visualization prototype in late R1, followed by temporally consistent grouping and a computational approximation benchmark in early R2. A–D remain unchanged. Known groups are test references or optional overrides, not the final user workflow. All terminology and interfaces remain domain-independent.
+
+Distinguish three deliverables: an aggregate view of a fitted graph, an estimated model of aggregate dynamics, and a computationally cheaper hierarchical estimator. Completing the first does not establish the second or third. Begin with two levels and hard disjoint membership, allowing singleton groups and an unresolved/ungrouped status. More levels and overlapping membership are deferred. Do not force every dataset to contain useful groups.
+
+#### I1. Late R1: Data Contracts, Automatic Static Groups, and Inspection
+
+Depends on D producing a validated single-layer graph. Add the following structures without replacing State, Trajectory, or Graph, or inserting aggregate nodes into the observation array as independent measurements.
+
+| Planned file | Type/function | Contract and objective |
+| --- | --- | --- |
+| `src/dynsample/core/hierarchy.py` | `HierarchySnapshot`, `__post_init__`, `members` | Store the fitting window, fixed base-node IDs, aligned membership vector, group IDs, grouping method/settings, and diagnostics. Membership is separate from node identity. |
+| Same file | `HierarchicalGraph` | Bundle the base graph, snapshot, aggregation map, group-level view, and provenance. Distinguish estimated drift edges from summarized edges, membership links, and loadings. |
+| `src/dynsample/inference/grouping.py` | `discover_groups`, `_select_group_resolution` | Discover groups from declared dynamical similarity or graph structure, with default resolution selection and overrides. Record whether signed/directed information is used or transformed. No manual group labels required. |
+| `src/dynsample/inference/aggregation.py` | `aggregate_trajectory`, `summarize_group_graph` | Produce group states with recorded weights and coverage, and separately summarize base edges. An edge summary is not an inferred aggregate drift matrix. |
+| `src/dynsample/inference/hierarchical_graph.py` | `build_hierarchical_graph`, `extract_subgraph` | Assemble the view and expose within-group and cross-group node edges without fitting all levels jointly. |
+| `src/dynsample/visualization/hierarchy.py` | `plot_hierarchy` | Plot aggregate nodes and a selected group's constituents, with consistent labels, direction, and distinct edge types. Return plot objects; no standalone GUI framework. |
+| `tests/test_hierarchy.py`, `test_grouping.py` | Data-contract and grouping tests | Reject invalid memberships; preserve node IDs and edge direction; verify group-label permutation invariance and no-group controls. |
+| `experiments/experiment_hierarchical_graph.py` | `main` | Complete synthetic data with known groups and cross-group exceptions; compare automatically discovered groups with truth and display both levels. |
+
+Before selecting a clustering algorithm, define what a group means: dense internal interaction, similar dynamical response, and approximately closed aggregate dynamics are different criteria. Select and document one initial criterion, automatic resolution rule, scaling, and common-factor treatment; do not conflate these definitions. Group-selection tuning uses training data and must not inspect future validation outcomes.
+
+Late-R1 acceptance: no supplied labels needed; interpretable aggregate/constituent views; original cross-group edges retained; reproducible settings; stable behavior on clear grouped systems and honest diagnostics on weak/no-group systems. Report grouping cost separately. This prototype groups an already fitted graph and makes no inference-speedup claim. It is a bounded late-R1 deliverable; joint hierarchy and dynamic membership are not R1 requirements. If no grouping criterion passes the agreed checks, record the blocker and agree a scope revision instead of silently advertising automatic hierarchy.
+
+#### I2. Early R2: Dynamic Membership and Group Identity
+
+Depends on I1 and the initial rolling-graph baseline in F. Develop these together before adding more elaborate joint temporal penalties.
+
+| Planned file | Type/function | Contract and objective |
+| --- | --- | --- |
+| `src/dynsample/core/hierarchy.py` | `HierarchyTimeline`, `GroupEvent`, `at` | Store ordered snapshots and lineage events: continuation, membership transfer, birth/death, split, and merge. Snapshot membership remains immutable; changing group membership never changes base-node IDs. |
+| `src/dynsample/inference/grouping.py` | `update_groups`, `_match_group_ids` | Match groups across windows, avoid treating label permutations as changes, and use temporal regularization/hysteresis to limit noise-driven reassignment. Allow split/merge rather than forcing one-to-one matches. |
+| `src/dynsample/metrics/hierarchy.py` | `hierarchical_graph_metrics`, `group_tracking_metrics` | Evaluate within-/between-/cross-group recovery, partition agreement independent of labels, false group changes, and detection delay. |
+| `tests/test_dynamic_hierarchy.py` | Temporal and lineage tests | Cover stable groups, genuine member transfers, split/merge, and noise-only changes without future leakage. |
+| `experiments/experiment_dynamic_hierarchy.py` | `main` | Show group evolution and constituent changes with known truth; compare independent reclustering against temporal tracking. |
+
+Update states frequently, relationships on a declared window schedule, and memberships less frequently or when accumulated evidence warrants it. Periodically audit cross-group relationships so an old partition cannot permanently hide new structure. Preserve full provenance for aggregation weights: a membership or weight change is not automatically a change in physical group dynamics. Retrospective smoothing and online tracking must be labeled separately.
+
+Early-R2 acceptance: preserve group identities under arbitrary label permutations, limit spurious changes in controls, detect actual changes with reported delay, and retain cross-group node exceptions. One changed constituent must not automatically trigger an entire group split.
+
+#### I3. Early R2: Benchmark Computational Savings Separately
+
+| Planned file | Function | Objective |
+| --- | --- | --- |
+| `src/dynsample/estimation/hierarchical.py` | `fit_hierarchical_graph`, `_screen_cross_group_candidates` | Prototype local fits plus a group-level model with selected cross-group corrections. Use inexpensive dynamical summaries or cached structure for candidate grouping; do not require a full dense fit on every update. |
+| `tests/test_hierarchical_estimation.py` | Reference and exception tests | Compare with small full-system fits, expose omitted cross-group effects, and reject unsupported aggregation assumptions. |
+| `experiments/benchmark_hierarchical_scaling.py` | `main` | Compare wall time, peak memory, prediction quality, edge recovery, grouping overhead, and full-refresh cost across node/feature/sample counts. |
+
+For G groups of n scalar nodes, separate dense within-group and group-level drift blocks have roughly G*n²+G² coefficients, before cross-level and exception parameters, compared with G²*n² for an unrestricted full drift. This is a parameter-count illustration, not runtime complexity. Dense matrix exponentials and covariance propagation may erase savings; avoiding the full-system computation requires a justified approximation or special structure. Maintain a small exact reference and report approximation error. Promote a fast mode only if measurements establish useful savings at a declared accuracy cost; otherwise retain the hierarchy as an inspection feature and report the performance blocker.
+
+The intended relationship views are within-group node links, between-group relations, cross-group node exceptions, and explicit membership/aggregation links. Joint dynamical couplings across levels require additional identifiability work. Within-node feature dynamics belongs to the multi-feature extension and must not be confused with grouping nodes.
+
+#### I4. R3/R4: Partial Observations and Validated Multilevel Uncertainty
+
+In R3, extend coverage and grouping diagnostics to partially observed nodes. Missingness must not silently change aggregate weights or force group disappearance. In R4, evaluate uncertainty and selection stability through the complete grouping-and-fitting pipeline, including resolution choice and lineage uncertainty. Account for dependent alerts across levels rather than treating parent and constituent evidence as independent.
+
+Mathematical checkpoint: aggregates are derived observations. A joint group-factor/node-residual model needs identifiable scale, rotation, and coupling conventions. Arbitrary aggregation need not preserve Markov dynamics. For Z=P X with constant diffusion, P K=A P is a sufficient drift-closure condition; otherwise quantify approximation error or add state. Changes in membership, weights, noise, and true dynamics must be distinguished. No precise causal attribution or complete cross-level identification is promised without supporting evidence.
+
 ## 9. Outside the Current Development Sequence
 
-- Nonlinear, jump, or event-driven models; changing node identities; community or intention inference.
-- Domain products such as a specific quant strategy or football tactical score.
+- Nonlinear, jump, or event-driven models; changing base-node identities; semantic intention inference. Automatic structural grouping is covered by I; discovered groups do not automatically carry domain meaning.
+- Standalone domain products. Domain-specific terminology and workflows do not belong in the core hierarchy model.
 - C++, GPU, distributed execution, and a generic plugin system without profiling evidence.
 - A standalone GUI product; current visualization uses experiment scripts.
 - Interpreting “no required bounds” as “no modeling assumptions.”
@@ -261,6 +322,10 @@ Current checkpoint: v019 contains both boundary experiments and regression tests
 | 2026-09-30 | Planning baseline | Inventory checked against v019, actual functions, and README; documentation-only changes | A1: document search rules and result states mathematically and algorithmically, then implement `_initial_ou_alpha_bounds` |
 
 Documentation maintenance on 2026-09-30: replaced the Chinese plan with this English version and moved detailed scalar API, mathematical, and evaluation references from the README into the appendices. No source-code changes.
+
+Scope update on 2026-09-30: added extension I for general known-group hierarchical and multiscale relationships. Domain-specific examples are not development requirements. The original update is superseded by the schedule revision below; joint cross-level inference remains gated by mathematical validation.
+
+Schedule revision on 2026-09-30: the user requested automatic, dynamically discovered groups and earlier hierarchy support. Added I1 to late R1 and I2–I3 to early R2, with explicit structures, file/function responsibilities, visualization checks, and measured computational tradeoffs. A–D remain unchanged. Known groups are references, not required user input. Missing-observation and uncertainty extensions remain in R3/R4. No source implementation was added.
 
 After each task, append its commit or files, test commands and results, experiment conclusions, and unresolved issues. Assign additions to a stage and explain changes in stage order so the implementation plan does not drift through conversation.
 
@@ -515,5 +580,5 @@ These notes preserve design considerations from the former README roadmap. The s
 - For R2, start with piecewise-constant graphs and keep retrospective inference distinct from online estimation. A candidate objective combines transition NLL, within-segment sparsity, and differences between neighboring drift matrices. Select proximal, alternating, or ADMM methods only after analyzing that actual objective; their names alone provide no convergence guarantee.
 - R3 uses an observation model `Y_k = H_k x(t_k) + epsilon_k`, with Gaussian measurement covariance R_k. Declare assumptions about missingness; informative missingness needs a separate model.
 - R4 should also assess uncertainty in change locations, prior sensitivity if Bayesian methods are added, and computational cost of repeated fitting. Claim error-rate control only under assumptions supported by the procedure and validation.
-- Active observation design, hierarchical models, adaptive path resolution, latent communities, and unrestricted continuously changing dynamics remain optional research beyond the required sequence.
+- Active observation design, unrestricted hierarchical models beyond extension I, adaptive path resolution, semantic community interpretation beyond structural grouping, and unrestricted continuously changing dynamics remain optional research beyond the required sequence.
 - Earlier README calendar estimates were provisional and are not release commitments. Re-estimate effort after the first known-structure benchmark. Acceptance evidence, rather than a calendar target, determines release readiness.
