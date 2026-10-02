@@ -798,3 +798,68 @@ def test_profile_search_matches_regular_grid_mle() -> None:
     assert result.fun <= result.scan.best_score
     np.testing.assert_allclose(result.x, expected_alpha, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(result.fun, expected_score, rtol=0.0, atol=1e-7)
+
+@pytest.mark.parametrize("scale", [0.001, 60.0, 1000.0])
+def test_fit_ou_respects_time_rescaling(scale: float) -> None:
+    rng = np.random.default_rng(42)
+
+    values = np.empty(401)
+    values[0] = -3.0
+
+    for i in range(1, values.size):
+        values[i] = (
+            0.8 * values[i - 1]
+            - 0.6
+            + 0.5 * rng.standard_normal()
+        )
+
+    times = np.arange(values.size) * 0.25
+
+    original = Trajectory(
+        times = times,
+        values = values[:, None, None],
+    )
+
+    rescaled = Trajectory(
+        times = scale * times,
+        values = values[:, None, None],
+    )
+
+    original_fit = ou.fit_ou(original)
+    rescaled_fit = ou.fit_ou(rescaled)
+
+    assert original_fit.success, original_fit.message
+    assert rescaled_fit.success, rescaled_fit.message
+
+    assert original_fit.method == "profile"
+    assert rescaled_fit.method == "profile"
+    assert original_fit.status == "interior_candidate"
+    assert rescaled_fit.status == "interior_candidate"
+
+    parameters_in_original_units = np.array([
+        rescaled_fit.mean_reversion * scale,
+        rescaled_fit.long_run_mean,
+        rescaled_fit.volatility * np.sqrt(scale),
+    ])
+
+    original_parameters = np.array([
+        original_fit.mean_reversion,
+        original_fit.long_run_mean,
+        original_fit.volatility,
+    ])
+
+    np.testing.assert_allclose(
+        parameters_in_original_units,
+        original_parameters,
+        rtol=1e-5,
+        atol=1e-7,
+    )
+
+    np.testing.assert_allclose(
+        rescaled_fit.fun,
+        original_fit.fun,
+        rtol=0.0,
+        atol=1e-7,
+    )
+
+    
