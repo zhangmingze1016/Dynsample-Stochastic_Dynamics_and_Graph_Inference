@@ -1,6 +1,6 @@
 # Dynsample Development Execution Plan
 
-Updated: 2026-10-01. Baseline: v023 plus the current, uncommitted flexible-interface changes intended for v024. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
+Updated: 2026-10-05. Baseline: `0b159cb` (v027), with v024 flexible OU interfaces, v025 time-rescaling validation, v026 LinearSDE, and v027 coupled transitions and simulation committed. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
 
 ## 1. Objective and Working Rules
 
@@ -20,9 +20,9 @@ Scalar OU closeout (A)
 ```
 
 - R denotes a release or milestone, not a model count or a Git commit label such as v019.
-- The current task is A3 validation and documentation; A1 search and A2 interface implementations are present. Move directly to B after completing A; do not keep adding scalar OU research features.
+- Current task: finish B with `graph_from_drift` and direction/weight validation. Scalar OU work is frozen; LinearSDE, matrix transitions, single-step sampling, and trajectory simulation are implemented. Do not add overlapping scalar experiments.
 - Before providing code, identify the task, objective, file, function, mathematical assumptions, return values, and acceptance checks. Explain code line by line or block by block.
-- The user studies and enters core implementation code. Do not modify core source without an explicit request. Handle tests and experiments according to the authorization for the current task.
+- The user studies and enters implementation, test, and experiment code. Provide copyable code with explanations by default; do not write these files without an explicit request to edit them. Documentation edits and execution of saved code follow the current task authorization.
 - Record the implementation, relevant tests, and unresolved limitations when completing a task. One successful experiment does not establish correctness for all inputs, global optimality, or statistical reliability.
 - Explain and discuss mathematical obstacles involving identifiability, optimization guarantees, or stability constraints before implementing a solution. An optimizer's success field cannot replace an argument.
 - Record new requests in the backlog before inserting them into the sequence. Document the reason, alternatives, and acceptance changes for a scope revision, and confirm the revision with the user.
@@ -40,7 +40,23 @@ Technical dependencies, evidence from failures, and stage acceptance determine t
 5. Plan A's three work packages in detail. Fix responsibilities and acceptance criteria for B–E, selecting research algorithms at their mathematical checkpoints. Retain objectives and candidate functions for F–H without prematurely promising signatures or solver guarantees.
 6. Handle routine spelling and implementation choices directly. Discuss changes to mathematical models, research scope, and unproven guarantees explicitly. Avoid interrupting ordinary development with repeated clarification requests.
 
-Schedule verifiable work units rather than rigid day counts: A1 search mathematics and boundary contract -> A1 implementation and tests -> A2 interface compatibility -> A3 full checks and documentation -> B matrix derivation. Revise the sequence when new evidence warrants it, not whenever a new topic comes up.
+Schedule verifiable work units rather than rigid day counts: B drift-to-graph semantics and tests -> B completion audit -> C likelihood and known-structure fitting -> D sparse graph selection. Revise the sequence when new evidence warrants it, not whenever a new topic comes up.
+
+### Current checkpoint and experiment evidence
+
+- Implemented: `LinearSDE`, `linear_transition`, `linear_step`, and `simulate_linear`, with one feature per node. Sampling handles positive-semidefinite covariance through a checked eigendecomposition. Extreme block-exponential overflow is reported; it is not automatically resolved.
+- The user reported all 40 tests in `tests/simulation/test_linear.py` passing. This documentation update did not independently rerun the full suite.
+- All eight existing experiment scripts were rerun on 2026-10-05. Settings, environment, numbers, and figures are recorded in [EXPERIMENTS.md](EXPERIMENTS.md). Experiment completion is not a substitute for test assertions or graph-recovery evaluation.
+- Next: inspect the existing Graph contract, decide signed-weight compatibility explicitly, implement `graph_from_drift`, remove diagonal self-dynamics, preserve j-to-i direction through transposition, and document any threshold as a conversion choice rather than statistical evidence.
+- Remaining B acceptance work: audit the current tests against the stage requirements, include direction and signed-weight tests, and verify any missing no-edge control before closing B. The existing three-node experiment replaces the proposed two-node demo; extend it only when an uncovered question justifies the change.
+
+### Product scope and deferred extensions
+
+The primary output is model-supported relationships, their reliability, and their changes; fitted coefficients serve this purpose. Keep observed states, inferred states, fixed-graph propagation, and changing relationships distinct. Behavioral labels are optional interpretation, not mandatory inference outputs. Zero, positive, and negative coefficients describe scalar dynamic channels, not every possible kind of relationship.
+
+Preserve A-D dependencies. Observed-input support, multi-feature block inference, task-dependent feature/node importance, and selected nonlinear interaction functions are extension work requiring separate assumptions and acceptance checks; they are not prerequisites for the first scalar-node graph estimator. Feature importance must account for units and redundant inputs, and node importance must specify a task and horizon. Future relationship forecasting requires its own evolution model and is not implied by change detection.
+
+The eventual user workflow should be data -> validated default analysis -> a simple state-and-graph view, with a timeline, uncertainty, and optional details. Keep advanced controls separate. Preserve full matrices and channel information under visual summaries. Build visualization around validated outputs; no unified analysis API or interactive graph viewer exists yet.
 
 ## 2. Baseline: Existing Files and Responsibilities
 
@@ -52,6 +68,8 @@ Existing functionality was identified through code inspection. This is not a cla
 | `src/dynsample/core/trajectory.py` | `Trajectory.__post_init__`, `__len__`, `n_steps`, `n_nodes`, `n_features`, `state_at` | Represent complete trajectories `(T,N,d)`, strictly increasing times, and state access. |
 | `src/dynsample/core/observation.py` | `Observation.__post_init__`, `n_nodes`, `n_features`, `n_observed` | Represent a masked observation at one time; no general missing-data inference yet. |
 | `src/dynsample/core/graph.py` | `Graph.__post_init__`, `n_nodes`, `degree`, `degree_matrix`, `laplacian`, `is_directed` | Store supplied adjacency relationships; does not learn graphs. |
+| `src/dynsample/core/linear_model.py` | `LinearSDE` | Validate constant K, b, B; one feature per node in the current simulation contract. |
+| `src/dynsample/simulation/linear.py` | `linear_transition`, `linear_step`, `simulate_linear` | Exact Gaussian transitions and coupled simulation at supplied times; no graph fitting. |
 | `src/dynsample/simulation/brownian.py` | `brownian_step`, `simulate_brownian` | Simulate independent zero-drift increments with shared scalar volatility. |
 | `src/dynsample/simulation/ou.py` | `ou_transition`, `ou_step`, `simulate_ou` | Exact scalar OU transitions `(F,offset,q)` and simulation; nodes remain independent. |
 | `src/dynsample/inference/reconstruction/brownian_bridge.py` | `brownian_bridge_step`, `brownian_bridge` | Sample individual states and joint paths conditional on endpoints; no parameter or graph inference. |
@@ -67,6 +85,7 @@ Existing validation files:
 | File | Validation responsibility |
 | --- | --- |
 | `tests/core/test_state.py`, `test_trajectory.py`, `test_observation.py`, `test_graph.py` | Data contracts; fill specific discovered gaps as needed. |
+| `tests/core/test_linear_model.py`, `tests/simulation/test_linear.py` | Model validation, OU reduction, singular drift, shared noise, composition, sampling moments, and irregular trajectories. |
 | `tests/simulation/test_brownian.py`, `test_ou.py` | Transitions, simulation, time and parameter validation, reproducibility. |
 | `tests/inference/test_brownian_bridge.py` | Endpoint conditions, joint means and covariances; correct zero-noise semantics in E. |
 | `tests/estimation/test_ou_estimation.py` | NLL, initialization, analytical profile parameters, independent optimization references. |
@@ -108,7 +127,7 @@ Required result information: physical parameters, finite-candidate NLL, both bou
 
 Acceptance: automatic and manual searches agree on an interior solution; both boundary competition and degenerate data are covered; budget exhaustion is reported honestly; alpha, sigma, and NLL transform as theoretically expected under time rescaling; search logic handles multiple candidate minima in dedicated tests. If profile evaluation near either boundary is unstable, pause to examine the parameterization before proceeding.
 
-### A2. Interface and Compatibility — Implemented in the Current Working Tree
+### A2. Interface and Compatibility — Implemented in v024
 
 Keep implementation in `estimation/ou.py`, updating `tests/estimation/test_ou_estimation.py` and `tests/estimation/test_ou_profile_fit.py`.
 
@@ -120,7 +139,7 @@ Keep implementation in `estimation/ou.py`, updating `tests/estimation/test_ou_es
 
 Acceptance: regression tests cover both existing calls and the new default; the default path requires no mu/sigma initialization or bounds; successful numerical stopping remains distinct from a credible interior candidate.
 
-### A3. Validation, Example, and Scope Freeze — Depends on A2
+### A3. Validation, Example, and Scope Freeze — Historical Acceptance Scope
 
 | Planned or updated file | Functions/entry points and objectives |
 | --- | --- |
@@ -135,6 +154,8 @@ Excluded: MCMC, scalar parameter confidence intervals, OU bridges, a new GUI, C+
 
 ## 4. B: Graph Semantics and Matrix Transitions
 
+Status: model and simulation functions are implemented in v026-v027; graph conversion and the final acceptance audit remain.
+
 Scope: complete observations `(T,N,1)`, starting with two nodes and `dX=(KX+b)dt+B dW`. Model matrices support general finite values; stability constraints belong to the estimation model specification. Distinguish correlated noise through B from drift relationships through K.
 
 | Planned file; existing files updated where applicable | Functions or types | Objective |
@@ -143,8 +164,8 @@ Scope: complete observations `(T,N,1)`, starting with two nodes and `dX=(KX+b)dt
 | `src/dynsample/core/graph.py` | `graph_from_drift` | K[i,j] represents j→i, so adjacency[j,i]=K[i,j]. Keep diagonal self-dynamics separate from edges. Record any threshold explicitly. |
 | `src/dynsample/simulation/linear.py` | `linear_transition` | Return F, c, and Q using matrix exponentials and block-matrix integration without requiring invertible K. |
 | Same file | `linear_step`, `simulate_linear` | Generate State/Trajectory through exact Gaussian transitions, retain actual times, and handle degenerate positive-semidefinite simulation covariance. |
-| `tests/test_linear_model.py`, `test_linear.py`, `test_graph.py` | Parameter, direction, scalar-reduction, zero-drift, composition, and covariance tests | Verify F(a+b), c/Q composition, positive semidefiniteness, and Monte Carlo moments. |
-| `experiments/experiment_linear_two_nodes.py` | `main` | Show trajectories and true K for known one-way coupling and a no-edge control; do not claim inferred relationships. |
+| `tests/core/test_linear_model.py`, `tests/simulation/test_linear.py`, `tests/core/test_graph.py` | Parameter, direction, scalar-reduction, zero-drift, composition, and covariance tests | Verify F(a+b), c/Q composition, positive semidefiniteness, and Monte Carlo moments. |
+| `experiments/experiment_linear.py` | `main` | Implemented: a three-node directed chain, analytical mean curves, and transition-moment comparison. A no-edge control remains an acceptance audit item; do not claim inferred relationships. |
 
 Acceptance: one node reduces to OU; uncoupled nodes reduce to independent models; nonzero affine drift is correct; j→i is never reversed. Handle rounding errors in Q with declared tolerances rather than arbitrary jitter that hides errors. Analyze subdivision/composition alternatives if stiffness causes unstable matrix exponentials or covariance calculations.
 
@@ -451,7 +472,7 @@ The interface experiment uses one seed-42 trajectory with 1,001 observations, al
 
 The profile experiment compares restrictive and wider ranges and displays a log-alpha score curve. The estimation experiment plots fitted one-step means, in-sample standardized residuals, and new simulations under fixed fitted parameters. One-step agreement is not long-horizon forecast validation; residual variance near one is partly enforced by fitted noise scale. New simulations neither reconstruct the observed path nor include parameter uncertainty.
 
-Independent regular-grid AR(1) MLE references, irregular-time likelihood checks, boundary regressions, input combinations, and failure handling are tested. Full-fit time-rescaling audits, repeated-seed recovery, held-out prediction, and search-setting sensitivity should not be claimed from a single passing experiment. Calibrated parameter intervals and graph estimation remain outside the current implementation.
+Independent regular-grid AR(1) MLE references, irregular-time likelihood checks, boundary regressions, input combinations, and failure handling are tested. Full-fit time-rescaling tests were added in v025. Repeated-seed recovery, held-out prediction, and search-setting sensitivity should not be claimed from a single passing experiment. Calibrated parameter intervals and graph estimation remain outside the current implementation.
 
 ## Appendix B. Mathematical and Modeling Reference
 

@@ -11,14 +11,15 @@ Node time series + timestamps
     -> Assess reliability and visualize the results
 ```
 
-**Current status:** scalar stochastic-model foundations and a validated `LinearSDE` coefficient container are implemented. Coupled matrix transitions, unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
+**Current status:** scalar stochastic-model foundations, a validated `LinearSDE` coefficient container, and coupled linear transitions and simulation are implemented. Unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
 
 ## Current Capabilities
 
 | Component | Implemented behavior |
 | --- | --- |
 | Data structures | `State` `(N,d)`, `Trajectory` `(T,N,d)`, masked `Observation`, and supplied weighted `Graph`. |
-| Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation; it does not yet simulate or fit coupled dynamics. |
+| Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation; fitting coupled dynamics remains planned. |
+| Coupled linear simulation | Exact matrix transitions, single-step sampling, and irregular-time trajectories with one feature per node; singular positive-semidefinite simulation covariance is supported. |
 | Brownian simulation | Independent increments with shared scalar volatility on irregular times. |
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
@@ -26,7 +27,7 @@ Node time series + timestamps
 | OU estimation | Conditional NLL, automatic profile search, optional joint-fit starts/bounds, and boundary diagnostics through `ds.fit_ou`. |
 | Validation examples | Analytical-reference tests, eight input-combination comparisons, and small-/large-alpha boundary experiments. |
 
-`Graph` stores relationships; it does not learn them. Current estimators require complete, exact scalar observations of shape `(T,1,1)`. Multi-node simulation currently uses independent components. An observation mask alone does not provide missing-data inference.
+`Graph` stores relationships; it does not learn them. Current estimators require complete, exact scalar observations of shape `(T,1,1)`. Brownian and scalar OU simulations use independent components; linear SDE simulation supports coupled nodes. An observation mask alone does not provide missing-data inference.
 
 ## Local Setup and Working Example
 
@@ -113,6 +114,7 @@ python -m experiments.experiment_ou_profile
 python -m experiments.experiment_ou_interface
 python -m experiments.experiment_ou_brownian_limit
 python -m experiments.experiment_ou_large_alpha_limit
+python -m experiments.experiment_linear
 ```
 
 Save the interface-comparison figure without opening a window:
@@ -124,6 +126,8 @@ python -m experiments.experiment_ou_interface --no-show --save /tmp/ou_interface
 The interface experiment fits one irregular trajectory with eight combinations of optional inputs. Similar scores demonstrate agreement on that dataset, not universal recovery accuracy. `argparse` and `pathlib` are Python standard-library modules and need no extra dependency.
 
 Plots of conditional state intervals describe process uncertainty under supplied parameters, not parameter uncertainty or simultaneous path coverage. Lines connecting sampled states are display connections, not inferred intermediate paths.
+
+See the [experiment record](docs/EXPERIMENTS.md) for reproducible settings, measured results, representative figures, and limits of each experiment.
 
 ## Development Direction
 
@@ -170,7 +174,7 @@ Extend model expressiveness incrementally: static linear dynamics first, then ob
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 
-The immediate sequence is scalar OU closeout -> matrix transitions -> known-structure estimation -> unknown static graphs -> R1 validation. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
+The next step is drift-to-graph conversion and direction checks, followed by known-structure estimation, unknown static graphs, and R1 validation. Coupled transitions and simulation are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
 
 The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of truth for stage dependencies, each file/function's responsibility, acceptance criteria, and deferred work. Its appendices contain the [mathematical reference](docs/DEVELOPMENT_PLAN.md#appendix-b-mathematical-and-modeling-reference) and [evaluation principles](docs/DEVELOPMENT_PLAN.md#appendix-c-evaluation-principles-across-releases). Planned APIs are explicitly distinguished from existing functionality.
 
@@ -186,13 +190,15 @@ The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of trut
 ```text
 src/dynsample/
     core/                       # State, Trajectory, Observation, Graph, LinearSDE
-    simulation/                 # Independent Brownian and scalar OU models
+    simulation/                 # Brownian, scalar OU, and coupled linear SDE simulation
     estimation/                 # Scalar Brownian and OU fitting
     inference/reconstruction/   # Brownian bridge sampling
     metrics/                    # Placeholder
     sampling/                   # Placeholder
 experiments/                    # Reproducible scripts and plots
 tests/                          # Analytical and numerical-reference tests
+docs/EXPERIMENTS.md             # Reproducible experiment results and figures
+docs/images/                    # Representative experiment figures
 docs/DEVELOPMENT_PLAN.md        # Execution plan and detailed references
 pyproject.toml                  # Metadata and dependency extras
 requirements.txt                # Editable installation with dev/plot extras
