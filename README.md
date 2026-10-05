@@ -6,18 +6,19 @@ The intended workflow is:
 
 ```text
 Node time series + timestamps
-    -> Estimate dynamical relationships
-    -> Track changes in the graph
-    -> Assess uncertainty, stability, and predictive value
+    -> Estimate node states and dynamical relationships
+    -> Track state evolution and changes in relationships
+    -> Assess reliability and visualize the results
 ```
 
-**Current status:** scalar stochastic-model foundations are implemented. Unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
+**Current status:** scalar stochastic-model foundations and a validated `LinearSDE` coefficient container are implemented. Coupled matrix transitions, unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
 
 ## Current Capabilities
 
 | Component | Implemented behavior |
 | --- | --- |
 | Data structures | `State` `(N,d)`, `Trajectory` `(T,N,d)`, masked `Observation`, and supplied weighted `Graph`. |
+| Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation; it does not yet simulate or fit coupled dynamics. |
 | Brownian simulation | Independent increments with shared scalar volatility on irregular times. |
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
@@ -126,7 +127,41 @@ Plots of conditional state intervals describe process uncertainty under supplied
 
 ## Development Direction
 
-The goal is a reusable scientific and engineering tool, starting with complete observations and static sparse linear dynamics. Missing-state reconstruction supports this goal. The project does not promise causal discovery, human-intention inference, automatic team discovery, or unrestricted nonlinear graph learning.
+The goal is a reusable scientific and engineering tool for estimating relationships, evaluating their reliability, and tracking their changes. Start with complete observations and static sparse linear dynamics. Parameters are intermediate tools for these tasks; exact recovery of every coefficient or a unique underlying equation is not the product requirement. Missing-state reconstruction supports this goal.
+
+### What a Connection Means
+
+The initial model is `dX = (K X + b) dt + B dW`. For scalar node states, an off-diagonal entry `K[i,j] != 0` defines a direct model-based dynamical dependence from node j to node i. Diagonal entries describe self-dynamics. A positive or negative coefficient describes the direction of its contribution to drift while other states are held fixed; it is not a behavioral label or proof of causation.
+
+An estimated nonzero coefficient alone is not sufficient evidence to display an edge. Planned graph estimation combines sparse selection, optimization diagnostics, held-out evaluation, and stability checks as those capabilities become available. An unselected edge means insufficient support under the chosen procedure, not proof of no relationship. Uncertain edges must remain distinguishable from absent ones; selection frequency is not automatically an edge-existence probability.
+
+Direct dependence, common inputs, and shared random variation are distinct. Future extensions may include observed inputs through `C U(t)` and separate analysis of the noise covariance rate `Q = B B.T`. Correlation and lagged association can result from these structures or indirect paths; they should not all be interpreted as direct edges. Unknown common factors require additional identification assumptions.
+
+### Features, States, and Propagation
+
+Future multi-feature inference will use a node-to-feature mapping and matrix blocks: `K[i,j]` then represents all feature channels from node j to node i. Only some channels may be supported, and their signs can differ. Preserve the full blocks and feature units even when the visualization shows one summarized edge. This extends the current scalar-node inference target; it is not implemented by the coefficient container alone.
+
+Keep three phenomena separate:
+
+- **State evolution:** node values change, even when relationships stay fixed.
+- **Propagation:** a disturbance travels through direct and indirect paths in a fixed graph. For a fixed linear model, `exp(K * tau)` describes the response to an initial-state perturbation after elapsed time `tau`; it is not the direct-edge matrix.
+- **Relationship change:** the estimated interaction structure changes across time, beyond what estimation variability can explain.
+
+Node states and relationships must therefore be displayed together. Feature and node importance are future, task-dependent evaluations, with an explicit prediction horizon and treatment of redundant information. Raw coefficients in different units are not comparable importance scores. Group membership, aggregate views, and group dynamics must also remain distinct; grouping alone does not establish a valid reduced dynamical model or a computational speedup.
+
+### Simple User Workflow
+
+The intended interface is **provide timestamped node data -> run an analysis -> inspect a dynamic view**. Users should not need to prescribe behaviors, supply the true graph, or choose an optimizer before starting. Model assumptions and the meaning of each relationship layer must still be explicit. Use validated defaults, expose advanced controls separately, and ask only for necessary data interpretation such as timestamps, identities, and feature units.
+
+Planned visualization includes a timeline, node states, relationship strengths, uncertainty indicators, change summaries, and optional feature-level details. Use observed coordinates when available; otherwise maintain a stable layout so layout motion is not mistaken for propagation. Distinguish observations, reconstructed states, inferred edges, and simulated trajectories. No unified analysis interface or interactive graph viewer is implemented yet.
+
+### Scope and Validation
+
+Relationship estimation and change detection are the main objectives. Predicting node states conditional on a fitted model is distinct from predicting future relationships; the latter requires a separate evolution model and remains optional research. The project does not promise unrestricted equation discovery, causal identification, or automatic behavioral interpretation.
+
+Validate graph recovery on synthetic systems with hidden ground-truth edges: independent nodes, one-way and reciprocal effects, common drivers, indirect chains, selected feature channels, propagation on fixed graphs, and changing connections. Vary seeds, observation duration, sampling intervals, noise, and effect sizes. Evaluate false and missed edges, stability, held-out predictive value, and, for changing graphs, false alarms and detection delay. A convincing animation or optimizer success flag is not sufficient evidence.
+
+Extend model expressiveness incrementally: static linear dynamics first, then observed common inputs and piecewise-changing relationships, followed by selected nonlinear interaction functions when experiments justify them. Candidate functions must avoid redundant parameterizations. Reliability checks begin with the first estimator; calibrated uncertainty, imperfect observations, and more flexible models require their own validation.
 
 | Milestone | Planned objective |
 | --- | --- |
@@ -150,7 +185,7 @@ The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of trut
 
 ```text
 src/dynsample/
-    core/                       # State, Trajectory, Observation, Graph
+    core/                       # State, Trajectory, Observation, Graph, LinearSDE
     simulation/                 # Independent Brownian and scalar OU models
     estimation/                 # Scalar Brownian and OU fitting
     inference/reconstruction/   # Brownian bridge sampling
