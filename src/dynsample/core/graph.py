@@ -114,3 +114,33 @@ class Graph:
             self.adjacency.T,
         )
 
+# Convert direct drift effects into source-to-target graph weights.
+def graph_from_drift(
+        drift: NDArray[np.float64],
+        threshold: float = 0.0,
+) -> Graph:
+    """Convert drift to a signed graph, excluding self-dynamics."""
+
+    drift = np.asarray(drift, dtype = np.float64)
+
+    if (
+        drift.ndim != 2
+        or drift.shape[0] != drift.shape[1]
+        or drift.shape[0] == 0
+    ):
+        raise ValueError("drift must be a non-empty square matrix")
+
+    if not np.all(np.isfinite(drift)):
+        raise ValueError("drift must contain only finite values")
+
+    if not np.isfinite(threshold) or threshold < 0:
+        raise ValueError("threshold must be finite and non-negative")
+
+    adjacency = drift.T.copy()
+
+    np.fill_diagonal(adjacency, 0.0)
+
+    adjacency[np.abs(adjacency) <= threshold] = 0.0
+
+    return Graph(adjacency = adjacency)
+

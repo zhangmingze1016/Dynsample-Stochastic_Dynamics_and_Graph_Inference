@@ -3,10 +3,11 @@ from dynsample.core.state import State
 from dynsample.simulation.linear import linear_step
 import numpy as np
 import pytest
-
 from dynsample.core.linear_model import LinearSDE
 from dynsample.simulation.linear import linear_transition
 from dynsample.simulation.ou import ou_transition
+from dynsample.core.trajectory import Trajectory
+from dynsample.simulation.linear import simulate_linear
 
 
 def test_linear_transition_zero_time():
@@ -281,3 +282,215 @@ def test_linear_step_sample_mean_and_covariance():
         np.abs(sample_covariance - expected_covariance),
         6.0 * covariance_standard_error,
     )
+
+# Preserve irregular times, the initial state, and the trajectory shape.
+def test_simulate_linear_preserves_times_and_initial_state():
+    model = LinearSDE(
+        drift=np.array([[-0.7, 0.2], [0.0, -0.4]]),
+        offset=np.array([0.3, -0.2]),
+        diffusion=np.eye(2),
+    )
+    initial_state = State(
+        time=1.0,
+        values=np.array([[2.0], [-1.0]]),
+    )
+    times = np.array([1.0, 1.02, 1.3, 2.0])
+    original_values = initial_state.values.copy()
+    original_times = times.copy()
+
+    result = simulate_linear(
+        initial_state=initial_state,
+        times=times,
+        model=model,
+        rng=np.random.default_rng(42),
+    )
+
+    assert isinstance(result, Trajectory)
+    assert result.values.shape == (4, 2, 1)
+    assert np.all(np.isfinite(result.values))
+    np.testing.assert_array_equal(result.times, original_times)
+    np.testing.assert_array_equal(result.values[0], original_values)
+    np.testing.assert_array_equal(initial_state.values, original_values)
+    np.testing.assert_array_equal(times, original_times)
+    assert initial_state.time == 1.0
+
+
+# With no elapsed time, return only the supplied initial state.
+def test_simulate_linear_accepts_one_time():
+    model = LinearSDE(
+        drift=np.zeros((2, 2)),
+        offset=np.zeros(2),
+        diffusion=np.eye(2),
+    )
+    initial_state = State(
+        time=3.0,
+        values=np.array([[2.0], [-1.0]]),
+    )
+
+    result = simulate_linear(
+        initial_state=initial_state,
+        times=np.array([3.0]),
+        model=model,
+        rng=np.random.default_rng(42),
+    )
+
+    assert result.values.shape == (1, 2, 1)
+    np.testing.assert_array_equal(result.times, [3.0])
+    np.testing.assert_array_equal(result.values[0], initial_state.values)
+
+
+# Compare a coupled deterministic trajectory with its analytical solution.
+def test_simulate_linear_matches_deterministic_coupling():
+    model = LinearSDE(
+        drift=np.array([[0.0, 1.0], [0.0, 0.0]]),
+        offset=np.zeros(2),
+        diffusion=np.zeros((2, 1)),
+    )
+    initial_state = State(
+        time=2.0,
+        values=np.array([[1.0], [3.0]]),
+    )
+    times = np.array([2.0, 2.1, 2.6, 3.5])
+
+    result = simulate_linear(
+        initial_state=initial_state,
+        times=times,
+        model=model,
+        rng=np.random.default_rng(42),
+    )
+
+    elapsed = times - initial_state.time
+    expected = np.column_stack(
+        (
+            1.0 + 3.0 * elapsed,
+            np.full(times.size, 3.0),
+        )
+    )
+
+    np.testing.assert_allclose(
+        result.values[:, :, 0],
+        expected,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+# Simulation must use each previous state and a continuous RNG sequence.
+def test_simulate_linear_matches_repeated_steps():
+    model = LinearSDE(
+        drift=np.array([[-0.7, 0.2], [0.0, -0.4]]),
+        offset=np.array([0.3, -0.2]),
+        diffusion=np.array([[1.0, 0.0], [0.4, 0.8]]),
+    )
+    initial_state = State(
+        time=0.0,
+        values=np.array([[1.0], [-1.0]]),
+    )
+    times = np.array([0.0, 0.03, 0.4, 1.2])
+
+    result = simulate_linear(
+        initial_state=initial_state,
+        times=times,
+        model=model,
+        rng=np.random.default_rng(42),
+    )
+
+    manual_rng = np.random.default_rng(42)
+    first = linear_step(initial_state, 0.03, model, manual_rng)
+    second = linear_step(first, 0.4, model, manual_rng)
+    third = linear_step(second, 1.2, model, manual_rng)
+
+    expected = np.stack(
+        [
+            initial_state.values,
+            first.values,
+            second.values,
+            third.values,
+        ],
+        axis=0,
+    )
+
+    np.testing.assert_array_equal(result.values, expected)
+
+
+# Reject malformed, nonfinite, mismatched, or non-increasing times.
+@pytest.mark.parametrize(
+    "times, message",
+    [
+        (np.array(0.0), "one-dimensional"),
+        (np.array([[0.0, 1.0]]), "one-dimensional"),
+        (np.array([]), "at least one time"),
+        (np.array([0.0, np.nan]), "finite values"),
+        (np.array([0.0, np.inf]), "finite values"),
+        (np.array([0.0, -np.inf]), "finite values"),
+        (np.array([0.1, 0.2]), "first time"),
+        (np.array([0.0, 0.0]), "strictly increasing"),
+        (np.array([0.0, -0.1]), "strictly increasing"),
+    ],
+)
+def test_simulate_linear_rejects_invalid_times(times, message):
+    model = LinearSDE(
+        drift=np.zeros((1, 1)),
+        offset=np.zeros(1),
+        diffusion=np.ones((1, 1)),
+    )
+    initial_state = State(
+        time=0.0,
+        values=np.array([[1.0]]),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        simulate_linear(
+            initial_state=initial_state,
+            times=times,
+            model=model,
+            rng=np.random.default_rng(42),
+        )
+
+
+# Finite timestamps can still produce an overflowing time interval.
+def test_simulate_linear_rejects_overflowed_interval():
+    model = LinearSDE(
+        drift=np.zeros((1, 1)),
+        offset=np.zeros(1),
+        diffusion=np.ones((1, 1)),
+    )
+    initial_state = State(
+        time=-1e308,
+        values=np.array([[0.0]]),
+    )
+
+    with pytest.raises(ValueError, match="time intervals must be finite"):
+        simulate_linear(
+            initial_state=initial_state,
+            times=np.array([-1e308, 1e308]),
+            model=model,
+            rng=np.random.default_rng(42),
+        )
+
+
+# Validate state shape even when the trajectory has only one time.
+@pytest.mark.parametrize(
+    "values",
+    [
+        np.zeros((3, 1)),
+        np.zeros((2, 2)),
+    ],
+)
+def test_simulate_linear_rejects_incompatible_initial_state(values):
+    model = LinearSDE(
+        drift=np.zeros((2, 2)),
+        offset=np.zeros(2),
+        diffusion=np.eye(2),
+    )
+    initial_state = State(time=0.0, values=values)
+
+    with pytest.raises(ValueError, match="initial state values must have shape"):
+        simulate_linear(
+            initial_state=initial_state,
+            times=np.array([0.0]),
+            model=model,
+            rng=np.random.default_rng(42),
+        )
+
+        
