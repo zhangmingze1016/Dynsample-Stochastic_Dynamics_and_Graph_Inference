@@ -6,8 +6,12 @@ from scipy.stats import multivariate_normal
 
 from dynsample.core.linear_model import LinearSDE
 from dynsample.core.trajectory import Trajectory
-from dynsample.estimation.linear import linear_negative_log_likelihood
+from dynsample.estimation.linear import (
+    fit_linear_offset,
+    linear_negative_log_likelihood,
+)
 from dynsample.estimation.ou import ou_negative_log_likelihood
+
 
 
 # One-dimensional linear dynamics must reproduce the scalar OU likelihood.
@@ -256,3 +260,172 @@ def test_linear_nll_rejects_singular_covariance(diffusion):
 
     with pytest.raises(ValueError, match="positive-definite covariance"):
         linear_negative_log_likelihood(trajectory, model)
+
+# With zero K, the fitted offset equals total displacement / total duration.
+def test_fit_linear_offset_matches_brownian_drift():
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.2, 0.9, 2.0]),
+        values=np.array([
+            [1.0, -1.0],
+            [1.3, -0.8],
+            [0.9, 0.2],
+            [2.5, 0.5],
+        ])[:, :, None],
+    )
+    drift = np.zeros((2, 2))
+    diffusion = np.array([
+        [1.0, 0.0],
+        [0.6, 0.8],
+    ])
+
+    result = fit_linear_offset(
+        trajectory=trajectory,
+        drift=drift,
+        diffusion=diffusion,
+    )
+
+    expected = np.array([0.75, 0.75])
+
+    np.testing.assert_allclose(
+        result.offset, expected, rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(result.x, result.offset)
+    np.testing.assert_allclose(result.model.offset, result.offset)
+    np.testing.assert_array_equal(result.model.drift, drift)
+    np.testing.assert_array_equal(result.model.diffusion, diffusion)
+
+    assert result.success
+    assert result.rank == 2
+    assert np.isfinite(result.fun)
+
+
+# Compare the scalar fit with an independently derived weighted formula.
+def test_fit_linear_offset_matches_scalar_formula():
+    times = np.array([0.0, 0.1, 0.4, 1.2])
+    values = np.array([3.0, 2.8, 2.4, 2.1])
+    alpha = 0.7
+    sigma = 1.5
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, None, None],
+    )
+
+    dt = np.diff(times)
+    transition = np.exp(-alpha * dt)
+    integrated_transition = -np.expm1(-alpha * dt) / alpha
+    variance = (
+        sigma**2 * -np.expm1(-2.0 * alpha * dt)
+        / (2.0 * alpha)
+    )
+    response = values[1:] - transition * values[:-1]
+
+    expected = (
+        np.sum(integrated_transition * response / variance)
+        / np.sum(integrated_transition**2 / variance)
+    )
+
+    result = fit_linear_offset(
+        trajectory=trajectory,
+        drift=np.array([[-alpha]]),
+        diffusion=np.array([[sigma]]),
+    )
+
+    np.testing.assert_allclose(
+        result.offset, [expected], rtol=1e-11, atol=1e-12
+    )
+
+    expected_score = ou_negative_log_likelihood(
+        trajectory=trajectory,
+        mean_reversion=alpha,
+        long_run_mean=expected / alpha,
+        volatility=sigma,
+    )
+    np.testing.assert_allclose(
+        result.fun, expected_score, rtol=1e-11, atol=1e-12
+    )
+
+
+# A singular coupled K must work without a matrix inverse.
+def test_fit_linear_offset_handles_singular_coupled_drift():
+    dt = 0.5
+    initial = np.array([1.0, 2.0])
+    expected_offset = np.array([0.3, -0.4])
+
+    drift = np.array([
+        [0.0, 1.0],
+        [0.0, 0.0],
+    ])
+
+    # Since K squared is zero, these expressions are exact.
+    transition = np.eye(2) + drift * dt
+    integrated_transition = (
+        np.eye(2) * dt + drift * dt**2 / 2.0
+    )
+    final = (
+        transition @ initial
+        + integrated_transition @ expected_offset
+    )
+
+    trajectory = Trajectory(
+        times=np.array([0.0, dt]),
+        values=np.stack([initial, final])[:, :, None],
+    )
+
+    result = fit_linear_offset(
+        trajectory=trajectory,
+        drift=drift,
+        diffusion=np.eye(2),
+    )
+
+    np.testing.assert_allclose(
+        result.offset, expected_offset, rtol=1e-11, atol=1e-12
+    )
+
+
+# At least one transition is required to estimate an offset.
+def test_fit_linear_offset_rejects_single_observation():
+    trajectory = Trajectory(
+        times=np.array([0.0]),
+        values=np.zeros((1, 1, 1)),
+    )
+
+    with pytest.raises(ValueError, match="at least two time steps"):
+        fit_linear_offset(
+            trajectory=trajectory,
+            drift=np.zeros((1, 1)),
+            diffusion=np.ones((1, 1)),
+        )
+
+
+# The current estimator supports one feature per node.
+def test_fit_linear_offset_rejects_multiple_features():
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.zeros((2, 2, 2)),
+    )
+
+    with pytest.raises(ValueError, match="one feature per node"):
+        fit_linear_offset(
+            trajectory=trajectory,
+            drift=np.zeros((2, 2)),
+            diffusion=np.eye(2),
+        )
+
+
+# Ordinary Gaussian likelihood requires positive-definite transition Q.
+def test_fit_linear_offset_rejects_singular_covariance():
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.zeros((2, 2, 1)),
+    )
+
+    with pytest.raises(ValueError, match="positive-definite covariance"):
+        fit_linear_offset(
+            trajectory=trajectory,
+            drift=np.zeros((2, 2)),
+            diffusion=np.array([
+                [1.0],
+                [0.0],
+            ]),
+        )

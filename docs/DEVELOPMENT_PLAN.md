@@ -1,6 +1,6 @@
 # Dynsample Development Execution Plan
 
-Updated: 2026-10-05. Baseline: `0b159cb` (v027), with v024 flexible OU interfaces, v025 time-rescaling validation, v026 LinearSDE, and v027 coupled transitions and simulation committed. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
+Updated: 2026-10-07. Baseline: `a577f05` (v029), including scalar OU fitting, coupled linear simulation, and signed drift-to-graph conversion. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
 
 ## 1. Objective and Working Rules
 
@@ -13,6 +13,7 @@ Scalar OU closeout (A)
   -> Graph semantics and matrix transitions (B)
   -> Parameter inference with known structure (C)
   -> Unknown sparse graph inference (D)
+  -> Limited multi-feature static inference (D2)
   -> R1 validation and release, with static hierarchy prototype (E, I1)
   -> R2 time-varying graphs and hierarchy tracking (F, I2–I3)
   -> R3 missing/noisy/asynchronous observations (G)
@@ -20,7 +21,7 @@ Scalar OU closeout (A)
 ```
 
 - R denotes a release or milestone, not a model count or a Git commit label such as v019.
-- Current task: finish B with `graph_from_drift` and direction/weight validation. Scalar OU work is frozen; LinearSDE, matrix transitions, single-step sampling, and trajectory simulation are implemented. Do not add overlapping scalar experiments.
+- Current task: C, beginning with `linear_negative_log_likelihood`; drift-to-graph conversion was committed in v029. Scalar OU work is frozen; LinearSDE, matrix transitions, single-step sampling, and trajectory simulation are implemented. Do not add overlapping scalar experiments.
 - Before providing code, identify the task, objective, file, function, mathematical assumptions, return values, and acceptance checks. Explain code line by line or block by block.
 - The user studies and enters implementation, test, and experiment code. Provide copyable code with explanations by default; do not write these files without an explicit request to edit them. Documentation edits and execution of saved code follow the current task authorization.
 - Record the implementation, relevant tests, and unresolved limitations when completing a task. One successful experiment does not establish correctness for all inputs, global optimality, or statistical reliability.
@@ -40,21 +41,21 @@ Technical dependencies, evidence from failures, and stage acceptance determine t
 5. Plan A's three work packages in detail. Fix responsibilities and acceptance criteria for B–E, selecting research algorithms at their mathematical checkpoints. Retain objectives and candidate functions for F–H without prematurely promising signatures or solver guarantees.
 6. Handle routine spelling and implementation choices directly. Discuss changes to mathematical models, research scope, and unproven guarantees explicitly. Avoid interrupting ordinary development with repeated clarification requests.
 
-Schedule verifiable work units rather than rigid day counts: B drift-to-graph semantics and tests -> B completion audit -> C likelihood and known-structure fitting -> D sparse graph selection. Revise the sequence when new evidence warrants it, not whenever a new topic comes up.
+Schedule verifiable work units rather than rigid day counts: C likelihood and known-structure fitting -> D scalar-node sparse graph selection -> D2 limited multi-feature inference -> E release validation. Revise the sequence when new evidence warrants it, not whenever a new topic comes up.
 
 ### Current checkpoint and experiment evidence
 
 - Implemented: `LinearSDE`, `linear_transition`, `linear_step`, and `simulate_linear`, with one feature per node. Sampling handles positive-semidefinite covariance through a checked eigendecomposition. Extreme block-exponential overflow is reported; it is not automatically resolved.
 - The user reported all 40 tests in `tests/simulation/test_linear.py` passing. This documentation update did not independently rerun the full suite.
 - All eight existing experiment scripts were rerun on 2026-10-05. Settings, environment, numbers, and figures are recorded in [EXPERIMENTS.md](EXPERIMENTS.md). Experiment completion is not a substitute for test assertions or graph-recovery evaluation.
-- Next: inspect the existing Graph contract, decide signed-weight compatibility explicitly, implement `graph_from_drift`, remove diagonal self-dynamics, preserve j-to-i direction through transposition, and document any threshold as a conversion choice rather than statistical evidence.
+- Completed in v029: signed drift-to-graph conversion, transposed direction, removed self-dynamics, and explicit magnitude filtering. Next: conditional multivariate likelihood, then known-structure fitting. The user reported graph tests passing; the current likelihood file is not yet a verified implementation.
 - Remaining B acceptance work: audit the current tests against the stage requirements, include direction and signed-weight tests, and verify any missing no-edge control before closing B. The existing three-node experiment replaces the proposed two-node demo; extend it only when an uncovered question justifies the change.
 
 ### Product scope and deferred extensions
 
 The primary output is model-supported relationships, their reliability, and their changes; fitted coefficients serve this purpose. Keep observed states, inferred states, fixed-graph propagation, and changing relationships distinct. Behavioral labels are optional interpretation, not mandatory inference outputs. Zero, positive, and negative coefficients describe scalar dynamic channels, not every possible kind of relationship.
 
-Preserve A-D dependencies. Observed-input support, multi-feature block inference, task-dependent feature/node importance, and selected nonlinear interaction functions are extension work requiring separate assumptions and acceptance checks; they are not prerequisites for the first scalar-node graph estimator. Feature importance must account for units and redundant inputs, and node importance must specify a task and horizon. Future relationship forecasting requires its own evolution model and is not implied by change detection.
+Preserve A-D dependencies. Limited multi-feature block inference is now an explicit late-R1 requirement in D2, after the first scalar-node graph estimator and before the final end-to-end experiment. Observed-input support, general task-dependent feature/node importance, and selected nonlinear interaction functions remain separate extensions; they are not prerequisites for that first estimator. Feature importance must account for units and redundant inputs, and node importance must specify a task and horizon. Future relationship forecasting requires its own evolution model and is not implied by change detection.
 
 The eventual user workflow should be data -> validated default analysis -> a simple state-and-graph view, with a timeline, uncertainty, and optional details. Keep advanced controls separate. Preserve full matrices and channel information under visual summaries. Build visualization around validated outputs; no unified analysis API or interactive graph viewer exists yet.
 
@@ -207,6 +208,31 @@ Mathematical checkpoint: exp(K dt) is generally dense, so thresholding F does no
 
 Acceptance: record configurations and evaluation procedures in advance; report results and failures across conditions, including no-edge negative controls; compare held-out predictions with independent models. Sparse selection is not an edge confidence probability.
 
+### D2. Limited Multi-Feature Static Inference — Late R1
+
+Scope revision approved on 2026-10-07: support multiple features per node before the R1 end-to-end experiment. Preserve the current single-feature implementation sequence; do not simply remove its shape checks or silently discard extra features. This adds work beyond the earlier file/function count.
+
+**Initial contract:** complete observations `(T,N,d)` with the same feature count and declared feature ordering for all nodes. Keep N physical nodes and D=N*d state dimensions distinct. Flatten in node-major order, with component index `i*d + a` for feature a of node i. Store node IDs, feature names, units, and any training-only scaling. Different feature counts per node, missingness, and time-varying graphs remain outside this increment.
+
+| File or area | Planned responsibility |
+| --- | --- |
+| `core/state_layout.py` | Define `StateLayout` with node/feature metadata, validation, `state_dimension`, and checked `flatten_state` / `unflatten_state` conversions. Preserve the existing State and Trajectory storage contracts. |
+| `core/linear_model.py` | Separate state dimension from node count through a documented compatibility migration; retain existing scalar-node calls. Do not reinterpret the current `n_nodes` property silently. |
+| `simulation/linear.py` | Reuse matrix transitions; adapt step/trajectory boundaries to the explicit layout and restore `(N,d)` output. |
+| `estimation/linear.py`, `estimation/sparse_graph.py` | Extend likelihood and masked fitting to flattened states. Support feature-channel masks and decide whether elementwise or block penalties serve the declared selection target; avoid duplicating the scalar estimator. |
+| `core/graph.py` and fitting results | Preserve full drift blocks and expose a declared node-level summary. A source-j/target-i drift block spans target rows and source columns. Within-node cross-feature effects remain self-dynamics, not inter-node edges. Keep positive and negative channels rather than assigning one arbitrary block sign. |
+| `metrics/graph.py` | Evaluate channel recovery and node-edge recovery separately. Report scale-dependent weight errors with their preprocessing convention. |
+| `visualization/hierarchy.py` and result inspection | Expose the supported feature channels behind a node edge. Channel weights are not automatically predictive importance or causal contributions. |
+| Tests under `tests/core/`, `tests/simulation/`, `tests/estimation/` | Cover layout round trips, d=1 compatibility, permutation consistency, dimensional rejection, simulation/likelihood references, and node-versus-channel direction. |
+| `experiments/experiment_multifeature_graph.py` | Start with two nodes and two features, with one known cross-node channel; then test mixed signs and within-node coupling. Hide truth from fitting and record false/missed channels and node edges across seeds. |
+| `docs/USAGE.md`, `docs/MATHEMATICS.md` | Document layout, units, block semantics, supported scope, examples, and failure modes. |
+
+**Mathematical checkpoint:** adding position and its derived velocity can create redundancy or known deterministic relations. Specify known kinematic constraints rather than estimating every coefficient freely. Check identifiability and whether each transition covariance supports the ordinary Gaussian density; a rank-deficient diffusion matrix does not by itself settle that question. Review scaling, parameter growth, and the choice of node-block versus channel sparsity before implementation.
+
+**Acceptance:** scalar behavior remains compatible; more than one feature is used rather than dropped; node identities survive flattening; selected channels and node-level edges agree with their declared mapping; mixed-sign blocks remain inspectable; synthetic results include no-edge controls and repeated seeds. A block norm is an unsigned summary and depends on feature scaling. Full automatic feature/node importance ranking is deferred; this increment guarantees channel inspection, not a universal importance score.
+
+Complete D2 before the final R1 end-to-end case and adapt I1 to node-level summaries without treating features as extra nodes. Demonstrations must state whether outputs are supplied, estimated, or simulated. Do not expand this milestone into unrestricted nonlinear discovery or a standalone GUI.
+
 ## 7. E: R1 Release and Documentation
 
 | File | Objective |
@@ -222,7 +248,7 @@ Acceptance: record configurations and evaluation procedures in advance; report r
 
 Stage E also includes the bounded automatic static hierarchy prototype in I1. Dynamic group tracking and computational savings remain early-R2 tasks, not assumed R1 capabilities.
 
-R1 is complete when an external user can supply a complete multivariate node time series, fit a static graph, read weights/directions/diagnostics, and reproduce experiments. Simulation and a plot window alone are insufficient. Determine supported node counts through measurements rather than promising scale or accuracy in advance.
+R1 is complete when an external user can supply a complete node time series with the limited multi-feature contract in D2, fit a static graph, inspect node edges and their feature channels with diagnostics, and reproduce experiments. Simulation and a plot window alone are insufficient. Determine supported node counts through measurements rather than promising scale or accuracy in advance.
 
 ## 8. F–H: R2–R4 File and Function Objectives
 
@@ -241,6 +267,12 @@ These are responsibility-based design targets, not frozen signatures. At each st
 Acceptance: do not automatically interpret noise changes as graph changes. Compare against the rolling baseline; animation is not validation. Analyze nonconvex fused objectives and insufficient window information before proceeding. Depends on R1. Pair the first rolling baseline with I2 dynamic group tracking and I3 scaling experiments; these precede more elaborate joint temporal optimization.
 
 ### G / R3: Missing Data, Measurement Noise, and Asynchronous Sampling
+
+**Product requirement note (2026-10-07): missing-information reconstruction.** Missing node or feature observations are supported inputs for this stage, not automatic reasons to reject an analysis. Preserve the full state layout and observation mask, use the available observations for filtering and smoothing, and return model-conditioned estimates with uncertainty for missing states where supported. Never substitute zeros for missing observations or treat reconstructed values as new evidence.
+
+Return usable partial results where possible and explain limitations specifically. Distinguish insufficient information or non-identifiability, broad reconstruction uncertainty, model mismatch, and numerical solver failure. Diverging estimates should trigger diagnostics, but divergence is not required for an information warning: finite estimates can still be non-unique, prior-dependent, or poorly constrained. Conversely, numerical divergence alone does not establish insufficient data. Any reconstruction of an entirely unobserved node must state the model, initial-distribution, and coupling assumptions supplying information.
+
+The current R1 complete-observation likelihood and full-rank offset estimator retain their explicit contracts. A rank-deficient parameter fit is a different issue from missing state observations; silently choosing one least-squares solution does not implement missing-data reconstruction. Add this capability through the observation model in R3, without changing the current implementation sequence.
 
 | Planned file | Functions or types | Objective |
 | --- | --- | --- |
@@ -496,7 +528,7 @@ dx_t = \bigl(K(t)x_t + C u_t + b\bigr)\,dt + B\,dW_t.
 
 Here `u` is an optional observed external input, `K` is the drift matrix, and `B` determines process noise. The block `K[i, j]` maps node **j into node i**. Thus drift blocks and the existing adjacency convention have opposite source/target indexing.
 
-For scalar nodes, an off-diagonal drift coefficient `K[i, j]` corresponds to `adjacency[j, i]`. For multiple features, an edge corresponds to a block of coefficients; any scalar summary must declare its aggregation rule. This conversion is a design requirement, not an existing helper.
+For scalar nodes, an off-diagonal drift coefficient `K[i, j]` corresponds to `adjacency[j, i]`. For multiple features, an edge corresponds to a block of coefficients; any scalar summary must declare its aggregation rule. Scalar conversion is implemented by `graph_from_drift`; feature-block conversion remains planned in D2.
 
 Diagonal drift blocks describe self-dynamics and are reported separately from inter-node edges. Signed drift coefficients are not automatically diffusion weights. Graph Laplacian models require their own sign, orientation, and stability assumptions; `Graph.laplacian` alone does not establish them.
 
