@@ -11,15 +11,16 @@ Node time series + timestamps
     -> Assess reliability and visualize the results
 ```
 
-**Current status:** scalar stochastic-model foundations, a validated `LinearSDE` coefficient container, and coupled linear transitions and simulation are implemented. Unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
+**Current status:** scalar stochastic-model foundations, coupled linear simulation, and linear parameter estimation under a supplied connection mask are implemented. Unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
 
 ## Current Capabilities
 
 | Component | Implemented behavior |
 | --- | --- |
 | Data structures | `State` `(N,d)`, `Trajectory` `(T,N,d)`, masked `Observation`, and supplied weighted `Graph`. |
-| Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation; fitting coupled dynamics remains planned. |
+| Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation. |
 | Coupled linear simulation | Exact matrix transitions, single-step sampling, and irregular-time trajectories with one feature per node; singular positive-semidefinite simulation covariance is supported. |
+| Linear estimation | Exact conditional NLL, weighted least-squares offset fitting, and masked drift fitting with fixed diffusion; complete observations `(T,N,1)`. |
 | Brownian simulation | Independent increments with shared scalar volatility on irregular times. |
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
@@ -27,7 +28,7 @@ Node time series + timestamps
 | OU estimation | Conditional NLL, automatic profile search, optional joint-fit starts/bounds, and boundary diagnostics through `ds.fit_ou`. |
 | Validation examples | Analytical-reference tests, eight input-combination comparisons, and small-/large-alpha boundary experiments. |
 
-`Graph` stores relationships; it does not learn them. Current estimators require complete, exact scalar observations of shape `(T,1,1)`. Brownian and scalar OU simulations use independent components; linear SDE simulation supports coupled nodes. An observation mask alone does not provide missing-data inference.
+`Graph` stores relationships; it does not learn them. OU and Brownian estimators require complete, exact scalar observations `(T,1,1)`; linear estimators support complete, exact observations `(T,N,1)`. Brownian and scalar OU simulations use independent components; linear SDE simulation supports coupled nodes. An observation mask alone does not provide missing-data inference.
 
 ## Local Setup and Working Example
 
@@ -101,6 +102,32 @@ Prefer the named parameter fields above: profile `x` is physical alpha, whereas 
 
 See the [scalar API reference](docs/DEVELOPMENT_PLAN.md#scalar-ou-fitting-and-experiment) for all eight combinations, allowed bounds, stopping states, and limitations.
 
+## Fit Linear Dynamics with a Supplied Mask
+
+For a complete two-node `trajectory` of shape `(T,2,1)`:
+
+```python
+import numpy as np
+
+from dynsample.estimation.linear import fit_linear_drift
+
+result = fit_linear_drift(
+    trajectory=trajectory,
+    diffusion=np.diag([0.6, 0.5]),  # Supplied B, not estimated.
+    drift_mask=np.array([[True, False], [True, True]]),
+)
+print(result.drift, result.offset)
+print(result.fun, result.success, result.message)
+```
+
+`K[i,j]` acts from node j to node i. The mask permits self-dynamics and node 1 -> node 2; excluded coefficients remain zero. `True` permits estimation, rather than asserting a nonzero edge. The mask is currently required. `initial_drift` is optional; the default starts from `-I / duration`, with excluded entries zeroed.
+
+`fit_linear_offset` solves for b by whitened least squares with fixed K and B. `fit_linear_drift` profiles out b during a single-start Powell search over permitted K entries. Named result fields include `model`, `drift`, `offset`, `fun`, `initial_fun`, `success`, `message`, and `spectral_abscissa`. Stability is reported, not imposed. Numerical convergence is not proof of global optimality or parameter accuracy. Missing-state reconstruction and unknown-edge selection are not implemented here.
+
+The [known-structure experiment](docs/EXPERIMENTS.md#6-linear-parameter-estimation-under-a-supplied-mask) compares three starts on the same irregularly sampled trajectory. They reach almost identical fits, but some coefficients differ substantially from their generating values. Repeated-seed accuracy evaluation remains pending.
+
+![Known-structure linear parameter estimation](experiments/outputs/linear_estimation.png)
+
 ## Tests and Experiments
 
 Run from the repository root after installation:
@@ -115,6 +142,7 @@ python -m experiments.experiment_ou_interface
 python -m experiments.experiment_ou_brownian_limit
 python -m experiments.experiment_ou_large_alpha_limit
 python -m experiments.experiment_linear
+python -m experiments.experiment_linear_estimation
 ```
 
 Save the interface-comparison figure without opening a window:
@@ -143,7 +171,7 @@ Direct dependence, common inputs, and shared random variation are distinct. Futu
 
 ### Features, States, and Propagation
 
-Future multi-feature inference will use a node-to-feature mapping and matrix blocks: `K[i,j]` then represents all feature channels from node j to node i. Only some channels may be supported, and their signs can differ. Preserve the full blocks and feature units even when the visualization shows one summarized edge. This extends the current scalar-node inference target; it is not implemented by the coefficient container alone.
+Limited multi-feature inference is a planned late-R1 milestone, after scalar-node graph recovery and before the final end-to-end experiment. It will use a node-to-feature mapping and matrix blocks: `K[i,j]` then represents all feature channels from node j to node i. Only some channels may be supported, and their signs can differ. Preserve the full blocks and feature units even when the visualization shows one summarized edge. This extends the current scalar-node inference target; it is not implemented by the coefficient container alone.
 
 Keep three phenomena separate:
 
@@ -169,12 +197,12 @@ Extend model expressiveness incrementally: static linear dynamics first, then ob
 
 | Milestone | Planned objective |
 | --- | --- |
-| R1 | Static graph estimation from complete observations, with validation and a late-stage automatic grouping/aggregate-view prototype. |
+| R1 | Static graph estimation from complete observations; scalar-node validation followed by limited multi-feature block inference, channel inspection, and a late-stage automatic grouping/aggregate-view prototype. |
 | R2 | Piecewise-changing relationships, dynamic group tracking, and hierarchical computation benchmarks. |
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 
-The next step is drift-to-graph conversion and direction checks, followed by known-structure estimation, unknown static graphs, and R1 validation. Coupled transitions and simulation are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
+The next step is repeated-seed and observation-duration validation of known-structure fitting, followed by remaining stage C work, unknown scalar-node graphs, limited multi-feature inference, and R1 validation. Coupled simulation and scalar drift-to-graph conversion are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
 
 The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of truth for stage dependencies, each file/function's responsibility, acceptance criteria, and deferred work. Its appendices contain the [mathematical reference](docs/DEVELOPMENT_PLAN.md#appendix-b-mathematical-and-modeling-reference) and [evaluation principles](docs/DEVELOPMENT_PLAN.md#appendix-c-evaluation-principles-across-releases). Planned APIs are explicitly distinguished from existing functionality.
 

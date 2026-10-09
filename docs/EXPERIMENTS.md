@@ -6,6 +6,8 @@ This document records reproducible examples, numerical observations, and their l
 
 Recorded on 2026-10-05 against commit `0b159cb` (`v027`). All eight scripts below were rerun successfully with the non-interactive Matplotlib Agg backend. Environment: Python 3.12.14, NumPy 2.5.3, SciPy 1.18.1, Matplotlib 3.11.2. No implementation or test files were changed for this record. This run did not rerun the full pytest suite.
 
+The linear estimation record in section 6 was separately rerun on 2026-10-08 against implementation commit `cc38b23` (v032), with the experiment script included in this documentation update. The full suite passed: **326 tests**. Environment versions were unchanged.
+
 Activate the project's virtual environment and run commands from the repository root. Omit `MPLBACKEND=Agg` to open plot windows; prepend it for headless execution. The numbers below are representative results, not portable exact-output assertions: library versions and numerical solvers can affect the final digits.
 
 | Experiment | Command | Purpose |
@@ -18,6 +20,7 @@ Activate the project's virtual environment and run commands from the repository 
 | Small-alpha boundary | `python -m experiments.experiment_ou_brownian_limit` | Compare the profiled OU limit with drifted Brownian motion. |
 | Large-alpha boundary | `python -m experiments.experiment_ou_large_alpha_limit` | Compare the profiled OU limit with independent Gaussian targets. |
 | Coupled linear simulation | `python -m experiments.experiment_linear` | Show propagation and compare sampled transition moments with theory. |
+| Known-structure linear estimation | `python -m experiments.experiment_linear_estimation` | Compare three starts and coefficient recovery with fixed diffusion and a supplied mask. |
 
 ## 1. Brownian bridge and OU simulation
 
@@ -188,6 +191,55 @@ PY
 ```
 
 **Interpretation and limits:** sampled moments are close to the fixed-model reference in this run. Nodes 1 and 3 have nonzero covariance without a direct connecting drift coefficient, illustrating indirect propagation. The graph remains fixed while states evolve. The shaded bands describe pointwise process uncertainty, not uncertainty about graph edges. This experiment does not establish unknown-graph recovery, change detection, or repeated-seed performance.
+
+## 6. Linear parameter estimation under a supplied mask
+
+**Objective:** estimate K and b from complete observations with B fixed and permitted drift entries supplied. This is parameter estimation under structural restrictions, not unknown-edge selection.
+
+**Reproduce:**
+
+```bash
+MPLBACKEND=Agg python -m experiments.experiment_linear_estimation
+```
+
+The script saves `experiments/outputs/linear_estimation.png`. Without `MPLBACKEND=Agg`, it also opens a plot window. A non-interactive `show()` warning under Agg does not prevent the figure from being saved.
+
+**Setup:**
+
+```text
+K = [[-0.7, 0.0], [0.5, -1.0]]
+b = [0.4, -0.2]
+B = diag([0.6, 0.5])
+X(0) = [2.0, -1.0]
+mask = [[True, False], [True, True]]
+```
+
+Alternate intervals 0.3 and 0.7 for 100 pairs: 201 observations over duration 100, generated with seed 42. Fit the same trajectory three times: default start, diagonal start `[[-0.4,0],[0,-0.4]]`, and opposite-coupling start `[[-1.5,0],[-0.4,-1.2]]`. No true drift or offset is passed as an initial guess. Each run uses a maximum of 150 Powell iterations; b is profiled by weighted least squares.
+
+| Start | Initial NLL | Final NLL | Optimizer success | Stable fitted drift |
+| --- | ---: | ---: | --- | --- |
+| Default | 130.348312 | 70.395596 | True | True |
+| Diagonal | 97.818046 | 70.395596 | True | True |
+| Opposite coupling | 96.013542 | 70.395596 | True | True |
+
+Default-fit coefficients:
+
+| Parameter | Generating value | Estimate |
+| --- | ---: | ---: |
+| K[0,0] | -0.70000000 | -1.09433391 |
+| K[0,1] | 0.00000000 | 0.00000000 (fixed by mask) |
+| K[1,0] | 0.50000000 | 0.56805819 |
+| K[1,1] | -1.00000000 | -1.16426933 |
+| b[0] | 0.40000000 | 0.67192115 |
+| b[1] | -0.20000000 | -0.24929453 |
+
+NLL at the generating parameters is **74.59130110**. The default fit has drift Frobenius error **0.43256856**, offset Euclidean error **0.27635315**, and spectral abscissa **-1.09433391**. All three runs report zero invalid trial evaluations. The largest drift difference from the default among these starts is approximately **7.79e-6**.
+
+![Known-structure coefficient recovery and initialization comparison](../experiments/outputs/linear_estimation.png)
+
+**Interpretation:** these three starts reach nearly identical finite candidates on this dataset. This supports local initialization robustness in this example, not global optimality. Fitted NLL can be lower than NLL at the generating parameters because maximum likelihood adapts to a finite sample. Some coefficient errors remain substantial; agreement between optimizers is not evidence of accurate recovery. The zero coefficient is enforced, not discovered. The heatmaps include diagonal self-dynamics and are not graph adjacency matrices.
+
+**Limits and next validation:** one seed, a correct linear-Gaussian model, complete exact observations, known diffusion, and a supplied mask. No confidence intervals, missing-state reconstruction, unknown edges, or changing graph are evaluated. Extend the same experiment with an initial 10-seed comparison and longer observation durations, retaining failed fits and reporting error distributions and success rates. Also retain no-edge controls and stage C prediction/noise-estimation checks before claiming broader usability.
 
 ## Updating this record
 

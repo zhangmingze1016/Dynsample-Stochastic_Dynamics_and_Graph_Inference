@@ -1,6 +1,6 @@
 # Dynsample Development Execution Plan
 
-Updated: 2026-10-07. Baseline: `a577f05` (v029), including scalar OU fitting, coupled linear simulation, and signed drift-to-graph conversion. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
+Updated: 2026-10-08. Implementation baseline: `cc38b23` (v032), including conditional linear likelihood, profiled offset estimation, and masked drift fitting with fixed diffusion. This document governs development order, scope, and acceptance criteria; the README provides a summary. It is not a list of implemented features. Files and functions marked as planned do not exist yet.
 
 ## 1. Objective and Working Rules
 
@@ -46,9 +46,9 @@ Schedule verifiable work units rather than rigid day counts: C likelihood and kn
 ### Current checkpoint and experiment evidence
 
 - Implemented: `LinearSDE`, `linear_transition`, `linear_step`, and `simulate_linear`, with one feature per node. Sampling handles positive-semidefinite covariance through a checked eigendecomposition. Extreme block-exponential overflow is reported; it is not automatically resolved.
-- The user reported all 40 tests in `tests/simulation/test_linear.py` passing. This documentation update did not independently rerun the full suite.
+- Coupled simulation and linear estimation have automated reference and failure tests; the current validation run is recorded in the execution log below.
 - All eight existing experiment scripts were rerun on 2026-10-05. Settings, environment, numbers, and figures are recorded in [EXPERIMENTS.md](EXPERIMENTS.md). Experiment completion is not a substitute for test assertions or graph-recovery evaluation.
-- Completed in v029: signed drift-to-graph conversion, transposed direction, removed self-dynamics, and explicit magnitude filtering. Next: conditional multivariate likelihood, then known-structure fitting. The user reported graph tests passing; the current likelihood file is not yet a verified implementation.
+- Completed through v032: signed drift-to-graph conversion, conditional multivariate likelihood, fixed-K offset fitting, and fixed-B masked drift fitting. The new two-node experiment compares three initializations; it does not select unknown edges. Next: repeated-seed and duration sensitivity checks before extending the fitting API.
 - Remaining B acceptance work: audit the current tests against the stage requirements, include direction and signed-weight tests, and verify any missing no-edge control before closing B. The existing three-node experiment replaces the proposed two-node demo; extend it only when an uncovered question justifies the change.
 
 ### Product scope and deferred extensions
@@ -71,6 +71,7 @@ Existing functionality was identified through code inspection. This is not a cla
 | `src/dynsample/core/graph.py` | `Graph.__post_init__`, `n_nodes`, `degree`, `degree_matrix`, `laplacian`, `is_directed` | Store supplied adjacency relationships; does not learn graphs. |
 | `src/dynsample/core/linear_model.py` | `LinearSDE` | Validate constant K, b, B; one feature per node in the current simulation contract. |
 | `src/dynsample/simulation/linear.py` | `linear_transition`, `linear_step`, `simulate_linear` | Exact Gaussian transitions and coupled simulation at supplied times; no graph fitting. |
+| `src/dynsample/estimation/linear.py` | `linear_negative_log_likelihood`, `fit_linear_offset`, `fit_linear_drift` | Complete scalar-node observations, exact NLL, profiled b and masked K fitting with fixed B; single-start search and stability diagnostics. |
 | `src/dynsample/simulation/brownian.py` | `brownian_step`, `simulate_brownian` | Simulate independent zero-drift increments with shared scalar volatility. |
 | `src/dynsample/simulation/ou.py` | `ou_transition`, `ou_step`, `simulate_ou` | Exact scalar OU transitions `(F,offset,q)` and simulation; nodes remain independent. |
 | `src/dynsample/inference/reconstruction/brownian_bridge.py` | `brownian_bridge_step`, `brownian_bridge` | Sample individual states and joint paths conditional on endpoints; no parameter or graph inference. |
@@ -172,19 +173,22 @@ Acceptance: one node reduces to OU; uncoupled nodes reduce to independent models
 
 ## 5. C: Parameter Inference with Known Graph Structure
 
+**TODO — optional drift mask (2026-10-08; not implemented by this note).** Allow `fit_linear_drift` callers to omit `drift_mask` or pass `None`. Resolve either case to an all-True `(n_nodes, n_nodes)` mask, including diagonal self-dynamics. Preserve explicit boolean masks and keep excluded entries exactly zero. This makes fitting accessible when users have no prior structural restrictions; it does not select reliable edges or establish that every fitted nonzero coefficient represents a connection. Unknown-edge selection remains in stage D. Acceptance checks: omitted and explicit `None` masks agree with an explicit all-True mask under identical inputs; restricted masks remain enforced; invalid masks are still rejected. Add this API change after the current explicit-mask fitting baseline is validated, without changing the development sequence.
+
 Input: complete trajectories, a known edge mask, and initially a supplied diffusion B. Output: mask-constrained K, b, score, and numerical diagnostics. Start with fixed noise, then add estimation of positive diagonal diffusion as a separate step within this stage. Do not begin by estimating unrestricted full covariance.
 
-| Planned file | Functions | Objective |
+| File | Functions | Status and responsibility |
 | --- | --- | --- |
-| `src/dynsample/estimation/linear.py` | `linear_negative_log_likelihood` | Exact multivariate transition NLL using Cholesky factorizations and linear solves, not explicit inverses. Ordinary densities require positive-definite Q; explicitly reject unsupported singular cases. |
-| Same file | `_pack_drift_parameters`, `_unpack_drift_parameters` | Map between masked parameters and optimization vectors; excluded edges remain zero. |
-| Same file | `_initial_linear_parameters` | Construct starts compatible with model constraints; use short-step approximations only for initialization. |
-| Same file | `fit_linear_known_graph` | Fit from multiple starts, record scores and convergence, and avoid requiring user-supplied parameter bounds by default. Use positive transforms when estimating diffusion. |
-| `src/dynsample/inference/prediction.py` | `predict_linear` | Return fitted conditional means and process covariances; distinguish updated one-step predictions from forecasts starting at a fixed state. |
-| `tests/test_linear_estimation.py`, `test_linear_prediction.py` | Density-reference, mask, recovery, prediction-moment, and failure tests | Cover sensitivity to initialization and irregular times. |
-| `experiments/experiment_known_graph_fit.py` | `main` | Fit known no-edge, directed-chain, and sparse stable structures; record errors, failure rates, and runtime. |
+| `src/dynsample/estimation/linear.py` | `linear_negative_log_likelihood` | Implemented: conditional Gaussian NLL using Cholesky solves; requires positive-definite transition covariance. |
+| Same file | `fit_linear_offset` | Implemented: fixed-K, fixed-B weighted least squares for b; rejects numerical rank deficiency. |
+| Same file | `fit_linear_drift` | Implemented: explicit boolean mask, optional initial K, profiled b, single-start Powell search, fixed B. Parameter packing and default initialization are internal; separate helper files are not required. |
+| `tests/estimation/test_linear_estimation.py` | Likelihood, offset, and drift tests | Implemented: independent references, masks, failure reporting, and input contracts. Broader recovery and time-rescaling validation remain. |
+| `experiments/experiment_linear_estimation.py` | `main` | Implemented: two-node known structure, irregular observations, three starts, coefficient errors and figure. Extend this script for repeated seeds and durations; do not create a duplicate known-graph experiment. |
+| `src/dynsample/inference/prediction.py` | `predict_linear` | Planned: conditional means and process covariances, distinguishing one-step updates from fixed-origin forecasts. |
 
-Mathematical checkpoint before implementation: choose how to constrain stable drift. Do not assume arbitrary K is stable or describe a sufficient diagonal-dominance condition as the entire stable family. Compare a restricted stable model family against general K with stability constraints, and record the choice and scope. Pause to discuss unexplained sampling aliasing or conflicting solutions from different starts.
+**Stability decision:** the initial implementation fits a general finite-time linear SDE and reports the maximum real drift eigenvalue; it does not constrain K to be stable. This preserves the current `LinearSDE` contract. A future optional stable family requires a separate mathematical decision and must preserve the declared mask. A negative diagonal alone is insufficient. Pause to discuss unexplained aliasing or conflicting solutions from different starts.
+
+**Remaining C work:** repeated-seed and duration evaluation, no-edge controls, optional-mask API checks described above, prediction, time-unit sensitivity, and separately validated positive diagonal diffusion estimation. Multiple starts are currently compared by the experiment, not automatically selected by the estimator. Do not describe C or R1 as complete.
 
 Acceptance: match independent density references; record estimation errors across experimental conditions rather than expecting one fit to equal the truth; validate fixed and estimated noise separately; test changes of time units. C performs parameter inference, not unknown-edge selection.
 
@@ -369,10 +373,11 @@ Mathematical checkpoint: aggregates are derived observations. A joint group-fact
 
 ## 10. Execution and Change Log
 
-Current checkpoint: v023 contains unified automatic/bounded profile fitting. The working tree adds flexible joint inputs, top-level exports, and the eight-combination experiment for the intended v024 commit. Scalar closeout is at A3; graph inference is not implemented. Follow dependencies rather than skipping mathematical checks to meet dates. Do not promise exact research-function counts or completion dates without supporting evidence.
+Current checkpoint: v032 implements fixed-diffusion masked linear fitting. The working experiment adds a two-node parameter-recovery and initialization comparison. Stage C validation remains in progress; unknown-edge selection is not implemented. Follow acceptance evidence rather than calendar targets.
 
 | Date | Task | Status/evidence | Next step |
 | --- | --- | --- | --- |
+| 2026-10-08 | Fixed-B masked fitting and experiment checkpoint | Implementation v032 (`cc38b23`); full suite: 326 passed. Headless `experiment_linear_estimation` reproduced three final NLLs of 70.395596 and generated the documented figure. Coefficient error remains non-negligible. | Extend the existing experiment across seeds and durations; retain optional-mask TODO and remaining C acceptance work. |
 | 2026-09-30 | Planning baseline | Inventory checked against v019, actual functions, and README; documentation-only changes | A1: document search rules and result states mathematically and algorithmically, then implement `_initial_ou_alpha_bounds` |
 | 2026-10-01 | A1–A3 implementation checkpoint, intended v024 (not yet committed) | Flexible `fit_ou`, explicit `fit_ou_joint`, top-level exports, and interface experiment present. `.venv/bin/python -m pytest -q`: 219 passed. Headless interface experiment reproduced all eight successful fits and maximum NLL difference about 2.12e-8. | Finish the remaining A acceptance audit, then begin B matrix derivation; no new scalar-model scope. |
 
