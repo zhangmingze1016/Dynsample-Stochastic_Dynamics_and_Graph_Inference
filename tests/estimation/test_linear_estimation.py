@@ -3,6 +3,10 @@
 import numpy as np
 import pytest
 from scipy.stats import multivariate_normal
+from scipy.optimize import OptimizeResult, minimize_scalar
+import dynsample.estimation.linear as linear_estimation
+
+from dynsample.estimation.linear import fit_linear_drift
 
 from dynsample.core.linear_model import LinearSDE
 from dynsample.core.trajectory import Trajectory
@@ -428,4 +432,262 @@ def test_fit_linear_offset_rejects_singular_covariance():
                 [1.0],
                 [0.0],
             ]),
+        )
+# Compare scalar drift fitting with an independent scalar likelihood.
+def test_fit_linear_drift_matches_scalar_reference():
+    times = np.arange(9, dtype=np.float64) * 0.5
+    values = np.array([
+        1.5, 0.8, 0.6, 0.1, -0.2,
+        0.2, 0.7, 0.3, -0.1,
+    ])
+    sigma = 0.7
+    dt = 0.5
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, None, None],
+    )
+
+    # On a regular grid, the optimal transition offset is mean(y - F*x).
+    def reference_score(k):
+        transition = np.exp(k * dt)
+        response = values[1:] - transition * values[:-1]
+        transition_offset = np.mean(response)
+
+        if k == 0.0:
+            variance = sigma**2 * dt
+        else:
+            variance = (
+                sigma**2 * np.expm1(2.0 * k * dt) / (2.0 * k)
+            )
+
+        residual = response - transition_offset
+
+        return float(
+            0.5 * np.sum(
+                np.log(2.0 * np.pi * variance)
+                + residual**2 / variance
+            )
+        )
+
+    reference = minimize_scalar(
+        reference_score,
+        bounds=(-5.0, -0.01),
+        method="bounded",
+        options={"xatol": 1e-10},
+    )
+
+    assert reference.success
+    assert -4.99 < reference.x < -0.02
+
+    result = fit_linear_drift(
+        trajectory=trajectory,
+        diffusion=np.array([[sigma]]),
+        drift_mask=np.array([[True]]),
+        initial_drift=np.array([[-1.0]]),
+    )
+
+    expected_k = float(reference.x)
+    expected_transition = np.exp(expected_k * dt)
+    expected_integral = np.expm1(expected_k * dt) / expected_k
+    expected_b = np.mean(
+        values[1:] - expected_transition * values[:-1]
+    ) / expected_integral
+
+    assert result.success, result.message
+
+    np.testing.assert_allclose(
+        result.drift,
+        [[expected_k]],
+        rtol=1e-4,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        result.offset,
+        [expected_b],
+        rtol=1e-4,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        result.fun,
+        reference.fun,
+        rtol=0.0,
+        atol=1e-7,
+    )
+
+
+# Only permitted entries may change, and input arrays must stay unchanged.
+def test_fit_linear_drift_respects_mask_and_preserves_inputs():
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.2, 0.5, 0.9, 1.4]),
+        values=np.array([
+            [1.0, -0.5],
+            [0.8, -0.2],
+            [0.9, 0.1],
+            [0.4, -0.1],
+            [0.2, 0.3],
+        ])[:, :, None],
+    )
+    mask = np.array([
+        [True, False],
+        [True, True],
+    ])
+    initial = np.array([
+        [-1.0, 0.0],
+        [0.2, -0.5],
+    ])
+    diffusion = np.array([
+        [0.7, 0.0],
+        [0.2, 0.6],
+    ])
+
+    original_mask = mask.copy()
+    original_initial = initial.copy()
+    original_diffusion = diffusion.copy()
+
+    initial_fit = fit_linear_offset(
+        trajectory=trajectory,
+        drift=initial,
+        diffusion=diffusion,
+    )
+
+    result = fit_linear_drift(
+        trajectory=trajectory,
+        diffusion=diffusion,
+        drift_mask=mask,
+        initial_drift=initial,
+        maxiter=20,
+    )
+
+    assert np.isfinite(result.fun)
+    assert result.fun <= initial_fit.fun + 1e-10
+    assert result.drift[0, 1] == 0.0
+
+    np.testing.assert_array_equal(result.x, result.drift[mask])
+    np.testing.assert_array_equal(mask, original_mask)
+    np.testing.assert_array_equal(initial, original_initial)
+    np.testing.assert_array_equal(diffusion, original_diffusion)
+
+    np.testing.assert_allclose(
+        result.fun,
+        linear_negative_log_likelihood(
+            trajectory=trajectory,
+            model=result.model,
+        ),
+    )
+
+
+# With no free drift entries, fit only the Brownian drift offset.
+def test_fit_linear_drift_handles_all_false_mask():
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.2, 0.9, 2.0]),
+        values=np.array([
+            [1.0, -1.0],
+            [1.3, -0.8],
+            [0.9, 0.2],
+            [2.5, 0.5],
+        ])[:, :, None],
+    )
+
+    result = fit_linear_drift(
+        trajectory=trajectory,
+        diffusion=np.eye(2),
+        drift_mask=np.zeros((2, 2), dtype=bool),
+    )
+
+    np.testing.assert_array_equal(result.drift, np.zeros((2, 2)))
+    np.testing.assert_allclose(result.offset, [0.75, 0.75])
+
+    assert result.success
+    assert result.x.size == 0
+    assert result.optimizer_result is None
+    assert result.spectral_abscissa == 0.0
+    assert not result.is_stable
+
+
+# An optimizer failure must remain a failure even with a finite candidate.
+def test_fit_linear_drift_preserves_optimizer_failure(monkeypatch):
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.5, 1.0]),
+        values=np.array([1.0, 0.8, 0.3])[:, None, None],
+    )
+
+    def fake_minimize(fun, x0, method, options):
+        return OptimizeResult(
+            x=x0.copy(),
+            fun=fun(x0),
+            success=False,
+            message="Iteration budget exhausted.",
+        )
+
+    monkeypatch.setattr(
+        linear_estimation,
+        "minimize",
+        fake_minimize,
+    )
+
+    result = fit_linear_drift(
+        trajectory=trajectory,
+        diffusion=np.array([[0.5]]),
+        drift_mask=np.array([[True]]),
+        initial_drift=np.array([[-1.0]]),
+    )
+
+    assert not result.success
+    assert "Iteration budget exhausted" in result.message
+    assert np.isfinite(result.fun)
+
+    np.testing.assert_allclose(result.drift, [[-1.0]])
+    np.testing.assert_allclose(result.spectral_abscissa, -1.0)
+    assert result.is_stable
+
+
+# Reject malformed masks, conflicting starts, and invalid iteration budgets.
+@pytest.mark.parametrize(
+    "mask, initial, maxiter, message",
+    [
+        (
+            np.array([True]),
+            None,
+            10,
+            "drift_mask must have shape",
+        ),
+        (
+            np.array([[1]]),
+            None,
+            10,
+            "boolean",
+        ),
+        (
+            np.array([[False]]),
+            np.array([[-1.0]]),
+            10,
+            "zero outside drift_mask",
+        ),
+        (
+            np.array([[True]]),
+            None,
+            0,
+            "positive integer",
+        ),
+    ],
+)
+def test_fit_linear_drift_rejects_invalid_configuration(
+    mask,
+    initial,
+    maxiter,
+    message,
+):
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.array([1.0, 0.5])[:, None, None],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        fit_linear_drift(
+            trajectory=trajectory,
+            diffusion=np.array([[0.5]]),
+            drift_mask=mask,
+            initial_drift=initial,
+            maxiter=maxiter,
         )
