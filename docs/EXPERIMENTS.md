@@ -1,6 +1,6 @@
 # Experiment Record
 
-This document records reproducible examples, numerical observations, and their limits. Experiments complement automated tests; successful execution or an attractive plot is not a proof of estimator accuracy.
+This document records reproducible examples, numerical observations, and their limits. Experiments complement automated tests; successful execution or an attractive plot is not a proof of estimator accuracy. Under the [relationship definition](DEVELOPMENT_PLAN.md#appendix-e-relationship-definitions-and-result-contract), these examples evaluate specified numerical descriptors, not semantic relation categories. Distinguish computed values, imposed structure, and evidence for reproducible patterns.
 
 ## Reproduction baseline
 
@@ -202,7 +202,7 @@ PY
 MPLBACKEND=Agg python -m experiments.experiment_linear_estimation
 ```
 
-The script saves `experiments/outputs/linear_estimation.png`. Without `MPLBACKEND=Agg`, it also opens a plot window. A non-interactive `show()` warning under Agg does not prevent the figure from being saved.
+The script saves the reference and recovery figures plus three CSV files under `experiments/outputs/`. Without `MPLBACKEND=Agg`, it also opens plot windows. The updated script skips `show()` with the Agg backend.
 
 **Setup:**
 
@@ -239,7 +239,43 @@ NLL at the generating parameters is **74.59130110**. The default fit has drift F
 
 **Interpretation:** these three starts reach nearly identical finite candidates on this dataset. This supports local initialization robustness in this example, not global optimality. Fitted NLL can be lower than NLL at the generating parameters because maximum likelihood adapts to a finite sample. Some coefficient errors remain substantial; agreement between optimizers is not evidence of accurate recovery. The zero coefficient is enforced, not discovered. The heatmaps include diagonal self-dynamics and are not graph adjacency matrices.
 
-**Limits and next validation:** one seed, a correct linear-Gaussian model, complete exact observations, known diffusion, and a supplied mask. No confidence intervals, missing-state reconstruction, unknown edges, or changing graph are evaluated. Extend the same experiment with an initial 10-seed comparison and longer observation durations, retaining failed fits and reporting error distributions and success rates. Also retain no-edge controls and stage C prediction/noise-estimation checks before claiming broader usability.
+**Reference limits:** the three-start comparison uses one trajectory. It assesses numerical initialization sensitivity, not repeated-sample accuracy. The extension below evaluates the latter under the same supplied structure and fixed diffusion.
+
+### Repeated seeds and observation durations
+
+**Evidence:** user execution on 2026-10-08, after adding summary self-checks to the working experiment based on v033 (`9a3ac1e`). The saved CSV files were inspected for this record. This documentation update did not rerun all 23 fits or the full test suite. The previous 326-test result belongs to the earlier implementation validation, not a new test run.
+
+**Design:** preserve the seed-42 reference and add seeds 0–9 at durations 100 and 300, with alternating intervals 0.3/0.7. This gives 201 and 601 observations respectively. All 20 repeated fits use the default initialization, fixed generating B, the same supplied mask, and a 150-iteration limit. Paired seeds extend the same simulated path at the longer duration under the current simulator; comparisons across durations are therefore dependent. The complete script performs 23 fits.
+
+Before fitting, `_check_summary` verifies hand-calculated mean/bias/RMSE, failure counting and exclusion, and unavailable statistics when no fit succeeds. These lightweight checks run inside the experiment; they are not additional pytest cases.
+
+| Duration | Observations | Attempts | Successful | Failed | Mean seconds per attempt |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 201 | 10 | 10 | 0 | 2.60 |
+| 300 | 601 | 10 | 10 | 0 | 8.69 |
+
+The following statistics use successful fits only; the denominator is 10 at each duration in this run. Bias is the mean signed error; RMSE is the square root of the mean squared error. Failed finite candidates remain in the raw records but are excluded from these accuracy statistics; an all-failed condition reports unavailable values, not zero error.
+
+| Parameter | Mean, T=100 | Bias, T=100 | RMSE, T=100 | Mean, T=300 | Bias, T=300 | RMSE, T=300 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| k11 | -0.780963 | -0.080963 | 0.155651 | -0.706986 | -0.006986 | 0.054599 |
+| k21 | 0.497283 | -0.002717 | 0.142189 | 0.537080 | 0.037080 | 0.089588 |
+| k22 | -1.091800 | -0.091800 | 0.194041 | -1.055035 | -0.055035 | 0.093237 |
+| b1 | 0.456059 | 0.056059 | 0.136761 | 0.418903 | 0.018903 | 0.066115 |
+| b2 | -0.152806 | 0.047194 | 0.133066 | -0.201148 | -0.001148 | 0.060616 |
+
+![Parameter recovery across seeds and durations](../experiments/outputs/linear_estimation_recovery.png)
+
+**Interpretation:** all five empirical RMSEs decrease with longer observation duration in this run. The absolute empirical bias of k21 increases while its RMSE decreases: signed errors can cancel, so a small bias alone does not establish accurate individual estimates. Runtime is machine/load dependent; these two measurements do not establish general complexity. Total NLLs across different data lengths are not directly comparable as measures of fit quality.
+
+**Saved artifacts:**
+
+- [Reference records](../experiments/outputs/linear_estimation_reference.csv): three initializations on seed 42.
+- [All repeated attempts](../experiments/outputs/linear_estimation_runs.csv): per-run parameters, scores, timing, status, and failure messages; saved after each attempt.
+- [Summary statistics](../experiments/outputs/linear_estimation_summary.csv): per-duration counts, bias, RMSE, and median errors.
+- [Reference figure](../experiments/outputs/linear_estimation.png) and [recovery figure](../experiments/outputs/linear_estimation_recovery.png).
+
+**Scope and next step:** this completes the initial repeated-seed/duration check for the known-structure baseline. Ten seeds do not establish estimator consistency, universal success, or calibrated intervals. The model is correctly specified, observations are complete/exact, B is known, and one forbidden coefficient is imposed by the mask. Unknown-edge selection, missing observations, and changing relationships are not evaluated. Proceed to the optional-mask interface; retain the planned no-edge controls, prediction evaluation, and estimated-noise checks.
 
 ## Updating this record
 

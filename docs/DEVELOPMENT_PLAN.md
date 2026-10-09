@@ -4,7 +4,7 @@ Updated: 2026-10-08. Implementation baseline: `cc38b23` (v032), including condit
 
 ## 1. Objective and Working Rules
 
-Estimate dynamical dependencies from timestamped node observations, with interpretable diagnostics and reliability evaluation. Support both engineering use and scientific validation. Start with complete observations and static relationships, then extend to changing relationships and imperfect observations.
+Extract mathematically defined relationship descriptors from timestamped node observations, evaluate their support, and locate changes. A relationship requires a reproducible numerical definition, not a behavioral name. Support engineering use and scientific validation. Start with complete observations and static linear descriptors, then extend to comparable time-varying descriptors and imperfect observations. See [Appendix E](#appendix-e-relationship-definitions-and-result-contract) for definitions and result semantics.
 
 Development sequence:
 
@@ -12,10 +12,10 @@ Development sequence:
 Scalar OU closeout (A)
   -> Graph semantics and matrix transitions (B)
   -> Parameter inference with known structure (C)
-  -> Unknown sparse graph inference (D)
+  -> Static relationship extraction and sparse graph views (D)
   -> Limited multi-feature static inference (D2)
   -> R1 validation and release, with static hierarchy prototype (E, I1)
-  -> R2 time-varying graphs and hierarchy tracking (F, I2–I3)
+  -> R2 relationship comparison, change localization, and hierarchy tracking (F, I2–I3)
   -> R3 missing/noisy/asynchronous observations (G)
   -> R4 reliability evaluation (H)
 ```
@@ -52,6 +52,10 @@ Schedule verifiable work units rather than rigid day counts: C likelihood and kn
 - Remaining B acceptance work: audit the current tests against the stage requirements, include direction and signed-weight tests, and verify any missing no-edge control before closing B. The existing three-node experiment replaces the proposed two-node demo; extend it only when an uncovered question justifies the change.
 
 ### Product scope and deferred extensions
+
+**Scope clarification (2026-10-08):** the product extracts and compares numerical relationship descriptors rather than assigning semantic categories or discovering a universal underlying rule. The existing linear SDE is the first estimator. Preserve A–E and R1–R4 dependencies; do not restart or replace validated code. Graphs are selected views of the descriptors. Direct drift, finite-horizon response, and noise covariance rate keep distinct meanings; available numerical objects do not imply every relationship is identifiable.
+
+**Immediate sequence (detailed in the C execution queue below):** (1) extend the existing known-structure experiment across seeds and durations, including failures; (2) validate the optional-mask contract and remaining C prediction/time-unit/noise tasks; (3) implement scalar sparse selection with baselines and no-edge controls; (4) expose descriptor metadata and graph mappings, then complete D2 feature blocks and I1 bounded grouping; (5) complete release usability and validation. No semantic classification system or new generic framework is required.
 
 The primary output is model-supported relationships, their reliability, and their changes; fitted coefficients serve this purpose. Keep observed states, inferred states, fixed-graph propagation, and changing relationships distinct. Behavioral labels are optional interpretation, not mandatory inference outputs. Zero, positive, and negative coefficients describe scalar dynamic channels, not every possible kind of relationship.
 
@@ -192,9 +196,91 @@ Input: complete trajectories, a known edge mask, and initially a supplied diffus
 
 Acceptance: match independent density references; record estimation errors across experimental conditions rather than expecting one fit to equal the truth; validate fixed and estimated noise separately; test changes of time units. C performs parameter inference, not unknown-edge selection.
 
-## 6. D: Unknown Static Sparse Graph Inference — R1 Core
+### Implementation Map for the Relationship Scope
 
-Scope: N scalar nodes, complete exact observations, and fixed K, starting with small systems. Use exact likelihood with an off-diagonal sparsity penalty and separate treatment of self-dynamics. Select regularization strength automatically by default, allowing overrides; regularization is not a parameter search bound.
+This is the consolidated implementation map for the 2026-10-08 scope clarification. It belongs to this plan, not a second roadmap. Appendix E defines relationship meanings and result semantics. Function names below are development targets, not already available APIs; later-stage signatures and algorithms remain subject to their mathematical checkpoints. Preserve existing behavior until compatibility tests support a change.
+
+| Order | File/action | Functions or types | User-visible purpose |
+| --- | --- | --- | --- |
+| C1 | Modify `experiments/experiment_linear_estimation.py` | `_build_reference_model`, `_simulate_case`, `_fit_case`, `_summarize_runs`, `_plot_recovery`, existing `main` | Establish whether estimated numerical relationships are reproducible across samples and durations. |
+| C2 | Modify `src/dynsample/estimation/linear.py` | Existing `fit_linear_drift` | Allow unrestricted fitting when no mask is supplied, preserving explicit restrictions. |
+| C3 | Add `src/dynsample/inference/prediction.py` | `predict_linear` | Produce conditional means and process covariances for evaluation rather than random point predictions. |
+| C3 | Add `src/dynsample/metrics/prediction.py` | `prediction_metrics` | Quantify held-out mean-prediction errors with declared aggregation. |
+| C4 | Extend existing estimation tests and experiment | Time-rescaling tests and no-edge scenario | Detect unit errors and characterize spurious estimates under absent interactions. |
+| C5 | Modify `src/dynsample/estimation/linear.py` | `fit_linear_diagonal_diffusion` | Estimate positive diagonal noise scales when B is not supplied; mathematical design precedes code. |
+| D | Add `src/dynsample/estimation/sparse_graph.py` | `_off_diagonal_penalty`, `_fit_graph_at_penalty`, `_select_graph_penalty`, `fit_graph` | Select supported direct drift channels with held-out tuning, rather than displaying every fitted nonzero value. |
+| D | Add `src/dynsample/estimation/baselines.py` | `fit_independent_ou`, `fit_discrete_var` | Compare interaction models with simpler references; VAR is restricted to appropriate regular sampling. |
+| D | Add `src/dynsample/metrics/graph.py` | `graph_recovery_metrics` | Measure false/missed edges and coefficient errors on known synthetic systems. |
+| D | Extend fit results and `src/dynsample/core/graph.py` | Existing result fields and `graph_from_drift` | Preserve numeric descriptors, node/channel direction, time support, units, and diagnostic availability behind a graph view. Do not add a duplicate generic relationship estimator. |
+| D2 | Add `src/dynsample/core/state_layout.py` | `StateLayout`, `flatten_state`, `unflatten_state` | Keep node identity separate from multiple state features and support block relationships. |
+| D2 | Modify existing model/simulation/estimation/graph files | Existing linear functions and block conversion contract | Use all declared features, preserve channels and mixed signs, and retain scalar compatibility. |
+| I1 | Add hierarchy files listed in I1 | Existing planned hierarchy types, grouping, aggregation, and `plot_hierarchy` | Inspect automatic groups and their constituent relationships without assigning semantic labels. |
+| E | Modify package exports; add `docs/USAGE.md`, `docs/MATHEMATICS.md` | Public exports, examples, definitions | Provide a small usable interface with reproducible meanings and explicit limitations. |
+| R2 | Add `src/dynsample/metrics/relationships.py` | `compare_relationships` | Compare aligned descriptors and locate channel/node changes without automatically claiming significance. |
+| R2 | Add dynamic estimation and change metrics listed in F | `fit_rolling_graph`, `_temporal_penalty`, `fit_dynamic_graph`, `change_point_metrics` | Estimate changing relationships and evaluate false alarms and detection delay. |
+| R3 | Add observation, filtering, smoothing, and estimation files listed in G | `ObservationSeries`, `kalman_filter`, `rts_smoother`, `state_space_negative_log_likelihood`, `fit_state_space_graph` | Use partial observations and return supported reconstructions with uncertainty. |
+| R4 | Add reliability files listed in H | `resample_trajectory`, `edge_stability`, `parameter_intervals`, `sensitivity_analysis`, `coverage_metrics` | Validate reliability rather than assigning unsupported confidence scores. |
+
+Only the current work package creates or changes code. The C queue below specifies near-term tests; D, D2, E, and F–I retain their own tests and acceptance gates. No new semantic classifier or universal relation taxonomy is part of this map.
+
+### C Execution Queue: Files, Functions, and Completion Gates
+
+Added 2026-10-08. Execute these work packages in order. Names below are planned unless marked existing. Do not create empty files ahead of their task. Implementation and test code are provided for the user to enter; documentation may be maintained directly. If a mathematical gate fails, investigate it before proceeding rather than changing estimators silently.
+
+#### C1. Repeated-seed validation — immediate next task
+
+Keep the existing `experiments/experiment_linear_estimation.py`; refactor its single large `main` incrementally:
+
+| Function | Responsibility |
+| --- | --- |
+| `_build_reference_model` | Return the existing two-node model, initial state, and mask; keep the reference experiment unchanged. |
+| `_simulate_case` | Generate complete observations for a declared seed and interval array using the existing simulator. |
+| `_fit_case` | Run one specified initialization; record numerical status, score, errors, runtime, and failure reason. Retain failed runs; do not substitute zero errors. |
+| `_summarize_runs` | Report attempted/successful/failed counts, signed bias and RMSE per coefficient, and median errors. Label statistics conditional on successful fits and report their denominator. |
+| `_plot_recovery` | Compare parameter estimates/errors across seeds and durations without treating empirical spread as a confidence interval. |
+| `main` (existing) | Preserve the current seed-42 three-start example, then run seeds 0–9 at durations 100 and 300 using the same alternating 0.3/0.7 intervals. Use paired seeds and keep the sampling schedule fixed when extending duration. Save a compact CSV and figure. |
+
+Add `tests/experiments/test_linear_estimation_summary.py` only for nontrivial summarization logic: `test_summary_counts_failures`, `test_summary_matches_hand_calculation`, and `test_summary_handles_no_successes`. Do not put expensive repeated fitting into unit tests.
+
+Update `docs/EXPERIMENTS.md` with settings, denominators, errors, failures, and figures. Gate: account for every run and investigate systematic discrepancies or optimization failure. Ten seeds are an initial diagnostic, not a precision guarantee; do not require every longer trajectory to improve.
+
+#### C2. Optional structural restrictions
+
+In `src/dynsample/estimation/linear.py`, update existing `fit_linear_drift`: omitted `drift_mask` and `None` resolve to an all-True mask; explicit masks retain their current meaning. Keep the mask resolution inside this function unless reuse justifies a helper. No new fitting algorithm.
+
+In `tests/estimation/test_linear_estimation.py`, add `test_fit_linear_drift_optional_mask_matches_full_mask` (omitted and None cases), retain explicit-mask tests, and add `test_fit_linear_drift_rejects_invalid_optional_mask`. Gate: all three unrestricted entry forms agree under identical data and starts; excluded entries remain exactly zero. Dense fitting is not unknown-edge selection.
+
+#### C3. Conditional prediction as an independent evaluation tool
+
+Create `src/dynsample/inference/prediction.py` with `predict_linear(initial_state, times, model)` as a planned interface. For this increment, the initial state is exact: return future conditional means and process covariance matrices at specified times, conditional on that one state. Include node/time metadata; do not return a sampled trajectory as a prediction. Defer uncertain initial-state inputs until their covariance propagation contract is specified.
+
+Create `tests/inference/test_linear_prediction.py`: `test_predict_linear_matches_scalar_ou`, `test_predict_linear_matches_zero_drift_reference`, `test_predict_linear_preserves_initial_state`, and `test_predict_linear_rejects_invalid_inputs` (parameterized). Verify irregular horizons and joint-noise covariance. Gate: agree with analytical references, preserve time/state shapes, and distinguish marginal covariance from covariance between different prediction times.
+
+Create `src/dynsample/metrics/prediction.py` with `prediction_metrics`: report RMSE/MAE for declared conditional means, with explicit per-node aggregation. Score joint predictive density using the existing likelihood separately; do not infer joint NLL by multiplying marginal fixed-origin densities.
+
+Create `tests/metrics/test_prediction.py` with `test_prediction_metrics_matches_hand_calculation` and `test_prediction_metrics_rejects_mismatched_inputs`. Extend the existing experiment with a chronological held-out segment: fit on training data only and distinguish fixed-origin forecasts from one-step predictions updated with observations.
+
+#### C4. Units and negative controls
+
+Extend `tests/estimation/test_linear_estimation.py` with `test_linear_nll_respects_time_rescaling`, `test_fit_linear_offset_respects_time_rescaling`, and `test_fit_linear_drift_respects_time_rescaling`. For t_new = c*t, use K_new=K/c, b_new=b/c, B_new=B/sqrt(c); score the same state observations. Use finite tolerances for optimization results and transformed explicit starts to separate invariance from initialization behavior.
+
+Extend `_build_reference_model` and `main` in the existing experiment with an independent-node case. Fit an unrestricted candidate as a negative control and record spurious estimated couplings without asserting they must be exactly zero. Stage D will evaluate selection false positives.
+
+#### C5. Estimate diagonal diffusion — mathematical gate first
+
+In `src/dynsample/estimation/linear.py`, plan `fit_linear_diagonal_diffusion` as a separate entry point. Estimate permitted K entries and positive diagonal B entries; profile b conditionally using existing code. Parameterize positive diffusion scales logarithmically. Do not overload the fixed-B function or estimate unrestricted covariance.
+
+Before coding, analyze vanishing-noise likelihood degeneracy, identifiability, admissible trial values, and failure reporting. Do not conceal boundary failure with arbitrary positivity floors. Record the chosen objective and result contract in this section before implementation.
+
+Extend `tests/estimation/test_linear_estimation.py` with planned tests `test_diagonal_diffusion_fit_matches_scalar_reference`, `test_diagonal_diffusion_fit_preserves_mask`, and `test_diagonal_diffusion_fit_reports_degenerate_data`, once the contract is settled. Extend the existing experiment to distinguish known-B from estimated-B accuracy and failure rates. Gate: independent scalar reference plus multi-seed evaluation; optimizer success alone is insufficient.
+
+#### C6. Close the known-structure stage
+
+Review existing tests against C acceptance; document supported scale and unresolved limits in `docs/EXPERIMENTS.md`. Update the current-capabilities sections of README and this plan. No additional estimator is created just to wrap completed functions. Commit validated units; run the full suite before stage exit. Proceed to D only after discrepancies requiring mathematical investigation are resolved or explicitly scoped out.
+
+## 6. D: Static Relationship Extraction and Sparse Graph Views — R1 Core
+
+Scope: N scalar nodes, complete exact observations, and fixed K, starting with small systems. Estimate direct drift descriptors and produce a selected graph view; preserve numerical values and diagnostics behind the view. Edge selection is a scoped inference procedure, not a requirement to name the relation or recover a unique mechanism. Use exact likelihood with an off-diagonal sparsity penalty and separate treatment of self-dynamics. Select regularization strength automatically by default, allowing overrides; regularization is not a parameter search bound.
 
 | Planned file | Functions | Objective |
 | --- | --- | --- |
@@ -209,6 +295,8 @@ Scope: N scalar nodes, complete exact observations, and fixed K, starting with s
 | `experiments/experiment_static_graph.py` | `main` | Vary true graphs, seeds, duration, sampling density, and noise; report recovery, prediction, failures, and runtime. |
 
 Mathematical checkpoint: exp(K dt) is generally dense, so thresholding F does not recover the direct drift graph. The likelihood is generally nonconvex in K; ordinary Lasso convexity guarantees do not transfer. Document how sparsity, stability, noise scale, and penalties interact before implementation. Do not present an unresolved algorithm choice as settled. Edges describe dynamical dependence within the specified model.
+
+**Descriptor output work (late D, before E):** extend existing estimation results and `core/graph.py` conversion with documented source/target conventions, node/feature mapping, time support, units/scaling, descriptor kind, and availability of reliability measures. Keep direct K, finite-horizon F, and supplied/estimated noise information separate. Do not add a dedicated type until the first usage demonstrates its need. Add contract tests under `tests/estimation/` and `tests/core/` for direction, ordering, mask-imposed zeros, unavailable diagnostics, and graph-summary mapping. D2 extends this same contract to blocks rather than introducing a competing representation.
 
 Acceptance: record configurations and evaluation procedures in advance; report results and failures across conditions, including no-edge negative controls; compare held-out predictions with independent models. Sparse selection is not an edge confidence probability.
 
@@ -252,23 +340,24 @@ Complete D2 before the final R1 end-to-end case and adapt I1 to node-level summa
 
 Stage E also includes the bounded automatic static hierarchy prototype in I1. Dynamic group tracking and computational savings remain early-R2 tasks, not assumed R1 capabilities.
 
-R1 is complete when an external user can supply a complete node time series with the limited multi-feature contract in D2, fit a static graph, inspect node edges and their feature channels with diagnostics, and reproduce experiments. Simulation and a plot window alone are insufficient. Determine supported node counts through measurements rather than promising scale or accuracy in advance.
+R1 is complete when an external user can supply a complete node time series with the limited multi-feature contract in D2, obtain static relationship descriptors and a selected graph view, inspect nodes/channels and diagnostic limitations, and reproduce experiments. Descriptor values must remain accessible without semantic labels or reliance on the visualization. Simulation and a plot window alone are insufficient. Determine supported node counts through measurements rather than promising scale or accuracy in advance.
 
 ## 8. F–H: R2–R4 File and Function Objectives
 
 These are responsibility-based design targets, not frozen signatures. At each stage, complete the mathematical design using evidence from prior stages. Record changes to files/functions here before implementation, without implying unresolved research questions are already solved.
 
-### F / R2: Time-Varying Graphs
+### F / R2: Relationship Comparison and Change Localization
 
 | Planned file | Functions | Objective |
 | --- | --- | --- |
 | `simulation/piecewise.py` | `compose_transitions`, `simulate_piecewise_linear` | Compose F/c/Q across segment boundaries and generate data with known change points. |
 | `estimation/dynamic_graph.py` | `fit_rolling_graph`, `_temporal_penalty`, `fit_dynamic_graph` | Establish a rolling baseline, then introduce temporal fusion. Use a specified default window/penalty selection procedure with overrides. |
+| `metrics/relationships.py` | `compare_relationships` (planned name) | Compare aligned like-defined descriptors across windows; report channel/node changes and metadata incompatibilities. Start descriptively, not with an unvalidated significance score. |
 | `metrics/change_points.py` | `change_point_metrics` | Report false/missed changes and localization errors with explicit matching tolerances. |
 | `tests/test_piecewise.py`, `test_dynamic_graph.py` | Tests organized by these contracts | Cover boundary-crossing transitions, no change, noise-only change, and actual drift change. |
 | `experiments/experiment_dynamic_graph.py` | `main` | Evaluate abrupt and gradual changes, recording graph recovery, detection delay, and prediction. |
 
-Acceptance: do not automatically interpret noise changes as graph changes. Compare against the rolling baseline; animation is not validation. Analyze nonconvex fused objectives and insufficient window information before proceeding. Depends on R1. Pair the first rolling baseline with I2 dynamic group tracking and I3 scaling experiments; these precede more elaborate joint temporal optimization.
+Acceptance: align identities, feature ordering, units, preprocessing, and horizons before comparing descriptors. Account for dependent overlapping windows and evaluate false alarms on unchanged systems. Localize affected channels/nodes without claiming causes. Do not automatically interpret noise changes as graph changes. Compare against the rolling baseline; animation is not validation. Analyze nonconvex fused objectives and insufficient window information before proceeding. Depends on R1. Pair the first rolling baseline with I2 dynamic group tracking and I3 scaling experiments; these precede more elaborate joint temporal optimization.
 
 ### G / R3: Missing Data, Measurement Noise, and Asynchronous Sampling
 
@@ -377,6 +466,7 @@ Current checkpoint: v032 implements fixed-diffusion masked linear fitting. The w
 
 | Date | Task | Status/evidence | Next step |
 | --- | --- | --- | --- |
+| 2026-10-08 | Relationship scope clarification | Consolidated relationship definitions in Appendix E; relationships are numerical descriptors with explicit definitions and evidence, without required semantic categories. Documentation only. | Preserve current C validation, then static descriptors/graph views in R1 and aligned comparisons in R2. |
 | 2026-10-08 | Fixed-B masked fitting and experiment checkpoint | Implementation v032 (`cc38b23`); full suite: 326 passed. Headless `experiment_linear_estimation` reproduced three final NLLs of 70.395596 and generated the documented figure. Coefficient error remains non-negligible. | Extend the existing experiment across seeds and durations; retain optional-mask TODO and remaining C acceptance work. |
 | 2026-09-30 | Planning baseline | Inventory checked against v019, actual functions, and README; documentation-only changes | A1: document search rules and result states mathematically and algorithmically, then implement `_initial_ou_alpha_bounds` |
 | 2026-10-01 | A1–A3 implementation checkpoint, intended v024 (not yet committed) | Flexible `fit_ou`, explicit `fit_ou_joint`, top-level exports, and interface experiment present. `.venv/bin/python -m pytest -q`: 219 passed. Headless interface experiment reproduced all eight successful fits and maximum NLL difference about 2.12e-8. | Finish the remaining A acceptance audit, then begin B matrix derivation; no new scalar-model scope. |
@@ -656,3 +746,180 @@ These notes preserve design considerations from the former README roadmap. The s
 - R4 should also assess uncertainty in change locations, prior sensitivity if Bayesian methods are added, and computational cost of repeated fitting. Claim error-rate control only under assumptions supported by the procedure and validation.
 - Active observation design, unrestricted hierarchical models beyond extension I, adaptive path resolution, semantic community interpretation beyond structural grouping, and unrestricted continuously changing dynamics remain optional research beyond the required sequence.
 - Earlier README calendar estimates were provisional and are not release commitments. Re-estimate effort after the first known-structure benchmark. Acceptance evidence, rather than a calendar target, determines release readiness.
+
+## Appendix E. Relationship Definitions and Result Contract
+
+Updated: 2026-10-08. This appendix defines product scope and planned result semantics. It does not introduce a new implemented API.
+
+### Objective
+
+Extract numerical descriptions of dependence among node features, assess their support, and locate changes across time. A relationship does not need a behavioral or domain label. It does need an explicit mathematical definition that permits reproduction and comparison. The library does not promise universal equation discovery, causal attribution, or semantic interpretation.
+
+A descriptor can be computed even when evidence for a persistent pattern is weak. Keep computation, evidence, and interpretation separate. A stable-looking number or a converged optimizer is not enough to establish a relationship.
+
+### First Mathematical Objects
+
+| Object | Definition in the current linear model | Interpretation and limits |
+| --- | --- | --- |
+| Direct drift channel | Off-diagonal K[i,j] in dX = (K X + b) dt + B dW | Contribution of source j to target i's conditional drift, holding other state components fixed. Model-conditioned dependence, not automatic causation. |
+| Self-dynamics | Diagonal entries or within-node blocks of K | Evolution within one node; keep separate from cross-node edges. |
+| Finite-horizon response | F(tau) = exp(K tau) | Response of the conditional mean to an initial-state perturbation at horizon tau. Includes indirect paths; not direct adjacency. |
+| Noise covariance rate | S = B B.T | Shared instantaneous random variation under the specified model; distinct from drift channels and state correlation. |
+| Descriptor change | Difference between like-defined descriptors on declared time windows | A numerical difference, not automatically a statistically supported change or its cause. |
+
+K, transition matrices, and supplied B are available from current model code. Unified descriptor records, descriptor comparisons, and calibrated change decisions are planned. Current masked fitting estimates K and b with B fixed, so a noise descriptor from that fit reflects the supplied B rather than newly discovered noise dependence. The first release should expose these distinctions without adding many relation families at once.
+
+Positive and negative weights indicate the sign of a specified scalar quantity. They do not form a universal taxonomy. A node-to-node feature block can contain both signs, and an unsigned block norm loses that information. Preserve the full block behind any graph summary.
+
+### Planned Result Contract
+
+Keep a compact primary result with details available on inspection:
+
+- Descriptor kind and mathematical convention, including source/target orientation.
+- Node IDs, feature channels, and self-dynamics versus cross-node scope.
+- Value or matrix/block, feature units, and preprocessing/scaling metadata.
+- Observation window and, where relevant, propagation horizon.
+- Model assumptions, estimation method, and numerical diagnostics.
+- Explicit support status and available reliability measures; mark unassessed measures as unavailable, not zero.
+- A graph-view mapping that states its threshold/selection and block aggregation rules.
+
+Do not combine these into an unexplained confidence score. Distinguish excluded-by-mask, estimated-zero, unselected, and insufficient-information states. A zero imposed by the user is not a discovered absence of dependence.
+
+Keep implementation proportional to the first validated use case. Extend existing fit results and graph conversion before building a generic registry or a new framework.
+
+### Evidence and Comparison
+
+R1 validation covers independent mathematical references, repeated seeds, observation duration, sampling intervals, no-edge controls, and held-out comparisons. Report failed fits and parameter/descriptor error distributions. Accurate prediction and accurate graph recovery are separate outcomes.
+
+R2 comparisons require aligned node identities, feature ordering, units, descriptor definitions, and horizons. Fit preprocessing on the reference/training portion and apply it consistently; independently changing scales can create artificial differences. Overlapping windows produce dependent estimates. Start with descriptive changes, and label alerts as exploratory until false-alarm behavior is evaluated.
+
+Locate change at channel, node, or group level without claiming a semantic explanation or causal origin. Changes in observed state, drift relationships, noise, sampling, and observation coverage are different phenomena and need controls. A graph may remain fixed while a disturbance propagates through it.
+
+### Missing Information and Reliability
+
+In R3, use an explicit observation model for incomplete, noisy, or asynchronous data. Return supported conditional reconstructions and uncertainty rather than treating missingness alone as invalid input. Keep reconstructed states separate from observations. Finite answers can still be non-identifiable or weakly supported; numerical divergence is neither necessary nor sufficient to diagnose insufficient information.
+
+R4 validates interval coverage, selection stability, sensitivity, and change reliability. Reliability work begins in R1; calibrated claims are gated by validation. Optional Bayesian methods do not replace identifiability analysis and are not required for the first releases.
+
+### Scope Boundary
+
+The core delivers interpretable numerical objects and evidence about their stability or change. Behavioral names, unrestricted relation classification, universal importance rankings, guaranteed recovery of a true graph, and forecasting future graph structure are not required deliverables.
+
+The stages above define implementation order; see [EXPERIMENTS.md](EXPERIMENTS.md) for current evidence.
+
+
+## Appendix F. Complete Remaining R1 Work Checklist
+
+Inventory checked on 2026-10-08 against v033 and the working documentation. This consolidates C, D, D2, I1, and E into one ordered queue; it does not add a new release scope. Existing linear likelihood, fixed-K offset fitting, fixed-B masked drift fitting, coupled simulation, and scalar graph conversion are retained, not rewritten. All names for unimplemented functions are target names; mathematical gates may require an explicitly documented revision. Test functions listed below are the planned acceptance cases, not a claim that unforeseen failures will need no additional tests. Paths are repository-relative.
+
+### R1-01. Repeated-sample and duration experiment
+
+- Modify `experiments/experiment_linear_estimation.py`: add `_build_reference_model`, `_simulate_case`, `_fit_case`, `_summarize_runs`, `_plot_recovery`; update `main`. Preserve the original example, add 10 seeds and durations 100/300, record failed attempts and runtime, and save summary data and figures.
+- Add `tests/experiments/test_linear_estimation_summary.py`: `test_summary_counts_failures`, `test_summary_matches_hand_calculation`, `test_summary_handles_no_successes`.
+- Update `docs/EXPERIMENTS.md`; generated files remain under `experiments/outputs/`.
+- Gate: explain error distributions and failures before expanding the estimator; repeated initialization agreement is not repeated-sample accuracy.
+
+### R1-02. Optional drift mask
+
+- Modify `src/dynsample/estimation/linear.py`: `fit_linear_drift` accepts omitted/None masks as all-True; explicit masks keep zeros fixed.
+- Extend `tests/estimation/test_linear_estimation.py`: `test_fit_linear_drift_optional_mask_matches_full_mask`, `test_fit_linear_drift_rejects_invalid_optional_mask`; retain existing restricted-mask tests.
+- Gate: unrestricted fitting does not claim sparse selection.
+
+### R1-03. Prediction and held-out scoring
+
+- Add `src/dynsample/inference/prediction.py`: `predict_linear`, returning conditional means and marginal process covariances from one exact initial state.
+- Add `src/dynsample/metrics/prediction.py`: `prediction_metrics`, reporting declared mean-prediction RMSE/MAE.
+- Add `tests/inference/test_linear_prediction.py`: `test_predict_linear_matches_scalar_ou`, `test_predict_linear_matches_zero_drift_reference`, `test_predict_linear_preserves_initial_state`, `test_predict_linear_rejects_invalid_inputs`.
+- Add `tests/metrics/test_prediction.py`: `test_prediction_metrics_matches_hand_calculation`, `test_prediction_metrics_rejects_mismatched_inputs`.
+- Modify existing experiment `main`: chronological train/validation split, fixed-origin versus updated one-step evaluation. Reuse the conditional NLL for joint path scoring.
+- Gate: no future observations in fitting/preprocessing; do not treat marginal forecast densities as independent joint observations.
+
+### R1-04. Units and no-edge controls
+
+- Extend `tests/estimation/test_linear_estimation.py`: `test_linear_nll_respects_time_rescaling`, `test_fit_linear_offset_respects_time_rescaling`, `test_fit_linear_drift_respects_time_rescaling`.
+- Extend `_build_reference_model` and `main` in the current estimation experiment with an independent-node scenario, fit unrestricted K, and report spurious numerical couplings.
+- Gate: verify time transformations and distinguish small estimated coefficients from selected absence.
+
+### R1-05. Unknown diagonal diffusion
+
+- Modify `src/dynsample/estimation/linear.py`: add `fit_linear_diagonal_diffusion`; retain the fixed-B entry point.
+- Extend `tests/estimation/test_linear_estimation.py`: `test_diagonal_diffusion_fit_matches_scalar_reference`, `test_diagonal_diffusion_fit_preserves_mask`, `test_diagonal_diffusion_fit_reports_degenerate_data`.
+- Extend the existing estimation experiment to compare known-B and estimated-B conditions.
+- Mathematical gate before code: derive the profiled objective and positive parameterization, diagnose vanishing-noise degeneracy and identifiability, and specify failure reporting. No unrestricted covariance estimation in this increment.
+
+### R1-06. Static sparse selection
+
+- Add `src/dynsample/estimation/sparse_graph.py`: `_off_diagonal_penalty`, `_fit_graph_at_penalty`, `_select_graph_penalty`, `fit_graph`.
+- Add `tests/estimation/test_sparse_graph.py`: `test_penalty_excludes_self_dynamics`, `test_zero_penalty_matches_unpenalized_objective`, `test_selection_uses_training_data_only`, `test_fit_graph_preserves_edge_orientation`, `test_fit_graph_reports_failed_candidates`.
+- Mathematical gate: choose an optimizer for the nonconvex penalized exact likelihood, specify fixed versus fitted diffusion during tuning, and define selection/refitting rules. Existing parameter-fitting convergence is not a solution to this gate.
+
+### R1-07. Baselines and graph evaluation
+
+- Add `src/dynsample/estimation/baselines.py`: `fit_independent_ou`, `fit_discrete_var` (regular-grid applicability explicit).
+- Add `src/dynsample/metrics/graph.py`: `graph_recovery_metrics`.
+- Add `tests/estimation/test_baselines.py`: `test_independent_ou_matches_scalar_fits`, `test_var_matches_regular_grid_reference`, `test_var_rejects_irregular_times`.
+- Add `tests/metrics/test_graph.py`: `test_graph_metrics_matches_hand_calculation`, `test_graph_metrics_handles_empty_graphs`, `test_graph_metrics_excludes_diagonal`, `test_graph_metrics_respects_direction`.
+- Add `experiments/experiment_static_graph.py`: `main`, testing independent nodes, directed/reciprocal effects, indirect chains, and common-driver controls across seeds and conditions. Common-driver cases must declare whether the driver is observed.
+- Gate: report false/missed edges, prediction, failures, and computational cost. Do not select test conditions after observing favorable results.
+
+### R1-08. Relationship descriptor contract
+
+- Modify result assembly in `fit_linear_drift`, `fit_linear_diagonal_diffusion`, and `fit_graph`; modify/document `graph_from_drift` in `src/dynsample/core/graph.py` as required by the output contract. No new universal relationship estimator.
+- Add `tests/estimation/test_relationship_results.py`: `test_result_preserves_descriptor_metadata`, `test_result_distinguishes_imposed_and_selected_zeros`, `test_result_marks_unavailable_reliability`, `test_result_graph_mapping_preserves_orientation`.
+- Gate: retain values, definitions, node/feature mapping, window/horizon, units/scaling and assumptions; keep K, finite-horizon F, and noise covariance descriptors distinct. Decide a minimal result representation before adding fields; do not build an unused framework.
+
+### R1-09. Multi-feature state layout
+
+- Add `src/dynsample/core/state_layout.py`: `StateLayout`, `__post_init__`, `state_dimension`, `flatten_state`, `unflatten_state` (final method/module placement decided together).
+- Modify `src/dynsample/core/linear_model.py`: `LinearSDE.__post_init__`, state-dimension metadata and backward-compatible node-count handling.
+- Add `tests/core/test_state_layout.py`: `test_layout_round_trip`, `test_layout_preserves_node_feature_order`, `test_layout_rejects_invalid_metadata`, `test_layout_scalar_compatibility`.
+- Extend `tests/core/test_linear_model.py`: `test_linear_model_layout_dimensions`, `test_linear_model_retains_scalar_contract`.
+- Gate: N physical nodes remain distinct from N*d coordinates; choose the compatibility contract before implementation.
+
+### R1-10. Multi-feature inference and block inspection
+
+- Modify `src/dynsample/simulation/linear.py`: `linear_step`, `simulate_linear`; retain the matrix mathematics of `linear_transition`, adapting its dimension access if needed.
+- Modify `src/dynsample/estimation/linear.py`: `linear_negative_log_likelihood`, `fit_linear_offset`, `fit_linear_drift`, `fit_linear_diagonal_diffusion` for the explicit layout.
+- Modify `src/dynsample/estimation/sparse_graph.py`: penalty, candidate fitting, selection, and `fit_graph` for the chosen channel/block contract.
+- Modify `src/dynsample/inference/prediction.py`: `predict_linear`; modify `src/dynsample/metrics/graph.py`: `graph_recovery_metrics` for separate channel/node results.
+- Modify `src/dynsample/core/graph.py`: add planned `graph_from_drift_blocks` while preserving scalar `graph_from_drift`; retain full blocks and declare unsigned summary semantics rather than canceling mixed signs.
+- Extend existing tests with `test_multifeature_scalar_compatibility`, `test_multifeature_likelihood_matches_flat_reference`, `test_multifeature_node_permutation`, `test_block_graph_keeps_within_node_dynamics_separate`, `test_block_graph_preserves_mixed_sign_channels` in their simulation/estimation/core files.
+- Add `experiments/experiment_multifeature_graph.py`: `main`, covering cross-node channels, mixed signs, self-coupling, and repeated-seed errors.
+- Mathematical gate: redundancy, covariance rank, feature units, and channel versus block penalties. Do not merely remove shape checks.
+
+### R1-11. Static grouping and hierarchy data
+
+- Add `src/dynsample/core/hierarchy.py`: `HierarchySnapshot`, `__post_init__`, `members`, `HierarchicalGraph` and its validation.
+- Add `src/dynsample/inference/grouping.py`: `discover_groups`, `_select_group_resolution`.
+- Add `tests/core/test_hierarchy.py`: `test_membership_preserves_node_ids`, `test_hierarchy_rejects_invalid_membership`, `test_hierarchy_handles_singletons`.
+- Add `tests/inference/test_grouping.py`: `test_grouping_label_permutation_invariance`, `test_grouping_clear_partition`, `test_grouping_no_group_control`, `test_group_resolution_avoids_future_data`.
+- Mathematical gate: choose one structural grouping criterion and resolution rule; permit unresolved/singleton outcomes. Do not promise meaningful groups for every dataset.
+
+### R1-12. Aggregation and hierarchy visualization
+
+- Add `src/dynsample/inference/aggregation.py`: `aggregate_trajectory`, `summarize_group_graph`.
+- Add `src/dynsample/inference/hierarchical_graph.py`: `build_hierarchical_graph`, `extract_subgraph`.
+- Add `src/dynsample/visualization/hierarchy.py`: `plot_hierarchy`; add its package `__init__.py` when needed, with no extra runtime functions.
+- Add `tests/inference/test_aggregation.py`: `test_aggregation_matches_hand_weights`, `test_group_summary_preserves_direction`, `test_aggregation_rejects_invalid_weights`.
+- Add `tests/inference/test_hierarchical_graph.py`: `test_hierarchical_view_retains_cross_group_edges`, `test_subgraph_preserves_original_ids`.
+- Add `tests/visualization/test_hierarchy.py`: `test_plot_hierarchy_returns_plot_objects`, `test_plot_hierarchy_handles_singletons` using a non-interactive backend, without pixel-perfect assertions.
+- Add `experiments/experiment_hierarchical_graph.py`: `main`, showing groups, constituents, and cross-group exceptions.
+- Gate: visual summaries are not aggregate dynamical models, new independent observations, or demonstrated speedups. No standalone frontend in R1.
+
+### R1-13. Existing data-contract and bridge fixes
+
+- Audit/modify `State.__post_init__` in `src/dynsample/core/state.py`, `Trajectory.__post_init__` in `core/trajectory.py`, `Observation.__post_init__` in `core/observation.py`, and `Graph.__post_init__` in `core/graph.py` only where checks reveal missing empty-dimension or array-ownership contracts. Preserve documented behavior or document any compatibility change.
+- Modify `brownian_bridge_step` and `brownian_bridge` in `src/dynsample/inference/reconstruction/brownian_bridge.py` to reject incompatible distinct endpoints at zero volatility; consistent endpoints return the deterministic constant path. Update `experiments/experiment_brownian_bridge.py` entry/logging only as needed for reproducibility.
+- Extend the existing core tests with empty-dimension and ownership tests after selecting their contracts. Extend `tests/inference/test_brownian_bridge.py`: `test_zero_noise_bridge_rejects_distinct_endpoints`, `test_zero_noise_bridge_preserves_equal_endpoints` for both entry points.
+- Gate: do not silently alter shared-array behavior; update legacy tests and documentation together.
+
+### R1-14. Public interface, final example, and release evidence
+
+- Modify `src/dynsample/__init__.py` and existing subpackage exports; expose selected validated model, fitting, prediction, and inspection functions. No duplicate fitting implementation and no unimplemented API promises.
+- Add `tests/test_public_api.py`: `test_public_imports`, `test_public_static_workflow`; optional plotting imports must not make plotting a mandatory core dependency.
+- Add `experiments/experiment_r1_workflow.py`: `main`, chaining complete multi-feature data, relationship estimation, descriptor/graph inspection, prediction evaluation, and optional static groups using implemented functions. This is the final composition example, not another estimation algorithm.
+- Add `docs/USAGE.md` and `docs/MATHEMATICS.md`; update README, `docs/EXPERIMENTS.md`, and this plan. Move repeated detailed reference material out of the README rather than duplicating it.
+- Review `pyproject.toml` and `requirements.txt`; add no dependency without actual use. Verify an isolated installation, public examples, full tests, plot output, and measured supported scale.
+- Gate: record release evidence and unresolved limitations. R1 excludes dynamic graph estimation, generic missing-data inference, calibrated relationship intervals, a standalone GUI, and universal semantic labels.
+
+No exact file/function total is a completion metric: many entries modify existing functions, some properties are not functions, and mathematical gates can revise helper structure. This checklist is the complete current R1 scope; any addition or removal requires updating it explicitly. The immediate next implementation remains R1-01.

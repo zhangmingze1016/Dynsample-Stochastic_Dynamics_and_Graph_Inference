@@ -1,6 +1,8 @@
-"""Recover a two-node linear drift under a known connection mask."""
+"""Evaluate linear estimation across starts, seeds, and durations."""
 
+import csv
 from pathlib import Path
+from time import perf_counter
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,232 +16,354 @@ from dynsample.estimation.linear import (
 from dynsample.simulation.linear import simulate_linear
 
 
-# Simulate a known system, estimate its coefficients, and compare starts.
-def main() -> None:
-    # 1. Define the data-generating model.
-    true_drift = np.array([
-        [-0.7, 0.0],
-        [0.5, -1.0],
-    ])
-    true_offset = np.array([0.4, -0.2])
-    diffusion = np.array([
-        [0.6, 0.0],
-        [0.0, 0.5],
-    ])
+PARAMETER_NAMES = ("k11", "k21", "k22", "b1", "b2")
 
-    true_model = LinearSDE(
-        drift=true_drift,
-        offset=true_offset,
-        diffusion=diffusion,
+
+# Keep the reference system identical across all experimental conditions.
+def _build_reference_model():
+    model = LinearSDE(
+        drift=np.array([
+            [-0.7, 0.0],
+            [0.5, -1.0],
+        ]),
+        offset=np.array([0.4, -0.2]),
+        diffusion=np.array([
+            [0.6, 0.0],
+            [0.0, 0.5],
+        ]),
     )
 
-    # Rows are receiving nodes; columns are source nodes.
-    drift_mask = np.array([
-        [True, False],
-        [True, True],
-    ])
-
-    # 2. Generate 201 observations over 100 time units.
-    intervals = np.tile([0.3, 0.7], 100)
-    times = np.concatenate(([0.0], np.cumsum(intervals)))
-
     initial_state = State(
-        time=float(times[0]),
+        time=0.0,
         values=np.array([
             [2.0],
             [-1.0],
         ]),
     )
 
-    trajectory = simulate_linear(
+    mask = np.array([
+        [True, False],
+        [True, True],
+    ])
+
+    return model, initial_state, mask
+
+
+# Generate observations on a supplied irregular sampling schedule.
+def _simulate_case(model, initial_state, intervals, seed):
+    times = np.concatenate((
+        [initial_state.time],
+        initial_state.time + np.cumsum(intervals),
+    ))
+
+    return simulate_linear(
         initial_state=initial_state,
         times=times,
-        model=true_model,
-        rng=np.random.default_rng(42),
+        model=model,
+        rng=np.random.default_rng(seed),
     )
-    values = trajectory.values[:, :, 0]
 
-    # 3. Use the same observations with three different starting points.
-    starting_points = {
-        "Default": None,
-        "Diagonal": np.array([
-            [-0.4, 0.0],
-            [0.0, -0.4],
-        ]),
-        "Opposite coupling": np.array([
-            [-1.5, 0.0],
-            [-0.4, -1.2],
-        ]),
+
+# Record one attempt, including finite candidates from unsuccessful fits.
+def _fit_case(
+    trajectory,
+    model,
+    mask,
+    seed,
+    case,
+    initial_drift=None,
+):
+    duration = float(trajectory.times[-1] - trajectory.times[0])
+
+    record = {
+        "seed": int(seed),
+        "duration": duration,
+        "observations": trajectory.n_steps,
+        "case": case,
+        "success": False,
+        "is_stable": None,
+        "seconds": np.nan,
+        "initial_nll": np.nan,
+        "final_nll": np.nan,
+        "drift_error": np.nan,
+        "offset_error": np.nan,
+        "invalid_evaluations": None,
+        "message": "",
+        "last_invalid_reason": "",
     }
 
-    results = {}
+    for name in PARAMETER_NAMES:
+        record[name] = np.nan
 
-    print("LINEAR DRIFT ESTIMATION")
-    print("Allowed direct connection: node 1 -> node 2")
-    print("Diffusion B is supplied and fixed.")
-    print(f"Observations: {times.size}")
-    print(f"Duration: {times[-1] - times[0]:.4f}")
-    print(flush=True)
+    print(
+        f"Starting: seed={seed}, duration={duration:.0f}, "
+        f"case={case}",
+        flush=True,
+    )
 
-    for name, initial_drift in starting_points.items():
-        print(f"Fitting: {name} ...", flush=True)
+    start = perf_counter()
+    result = None
 
+    try:
         result = fit_linear_drift(
             trajectory=trajectory,
-            diffusion=diffusion,
-            drift_mask=drift_mask,
+            diffusion=model.diffusion,
+            drift_mask=mask,
             initial_drift=initial_drift,
             maxiter=150,
         )
-        results[name] = result
 
-    # 4. Print numerical comparisons.
-    true_score = linear_negative_log_likelihood(
-        trajectory=trajectory,
-        model=true_model,
-    )
+        record.update({
+            "success": bool(result.success),
+            "is_stable": bool(result.is_stable),
+            "initial_nll": float(result.initial_fun),
+            "final_nll": float(result.fun),
+            "drift_error": float(
+                np.linalg.norm(result.drift - model.drift)
+            ),
+            "offset_error": float(
+                np.linalg.norm(result.offset - model.offset)
+            ),
+            "invalid_evaluations": int(result.invalid_evaluations),
+            "message": str(result.message),
+            "last_invalid_reason": result.last_invalid_reason or "",
+            "k11": float(result.drift[0, 0]),
+            "k21": float(result.drift[1, 0]),
+            "k22": float(result.drift[1, 1]),
+            "b1": float(result.offset[0]),
+            "b2": float(result.offset[1]),
+        })
 
-    print("\nTRUE COEFFICIENTS")
-    print("K:")
-    print(true_drift)
-    print("b:")
-    print(true_offset)
-    print(f"NLL at generating parameters: {true_score:.8f}")
+    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        record["message"] = f"{type(exc).__name__}: {exc}"
 
-    print("\nSTARTING-POINT COMPARISON")
+    record["seconds"] = perf_counter() - start
+
     print(
-        f"{'Case':<20}"
-        f"{'Initial NLL':>15}"
-        f"{'Final NLL':>15}"
-        f"{'Success':>10}"
-        f"{'Stable':>10}"
+        f"Finished: success={record['success']}, "
+        f"NLL={record['final_nll']:.6f}, "
+        f"seconds={record['seconds']:.2f}",
+        flush=True,
     )
 
-    for name, result in results.items():
-        print(
-            f"{name:<20}"
-            f"{result.initial_fun:>15.6f}"
-            f"{result.fun:>15.6f}"
-            f"{str(result.success):>10}"
-            f"{str(result.is_stable):>10}"
+    if not record["success"]:
+        print(f"  Reason: {record['message']}", flush=True)
+
+    return record, result
+
+
+# Summarize successful estimates while explicitly counting all failures.
+def _summarize_runs(records, true_parameters):
+    true_parameters = np.asarray(true_parameters, dtype=np.float64)
+    if true_parameters.shape != (len(PARAMETER_NAMES),):
+        raise ValueError("true_parameters must contain five values")
+    if not np.all(np.isfinite(true_parameters)):
+        raise ValueError("true_parameters must be finite")
+
+    summaries = []
+    durations = sorted({row["duration"] for row in records})
+
+    for duration in durations:
+        rows = [
+            row for row in records
+            if row["duration"] == duration
+        ]
+        successful = [row for row in rows if row["success"]]
+
+        summary = {
+            "duration": duration,
+            "attempted": len(rows),
+            "successful": len(successful),
+            "failed": len(rows) - len(successful),
+            "success_rate": len(successful) / len(rows),
+            "mean_seconds_all_attempts": float(
+                np.mean([row["seconds"] for row in rows])
+            ),
+            "median_drift_error_successful": np.nan,
+            "median_offset_error_successful": np.nan,
+        }
+
+        for name, truth in zip(PARAMETER_NAMES, true_parameters):
+            summary[f"{name}_mean"] = np.nan
+            summary[f"{name}_bias"] = np.nan
+            summary[f"{name}_rmse"] = np.nan
+
+            if successful:
+                estimates = np.array([
+                    row[name] for row in successful
+                ])
+                errors = estimates - truth
+
+                summary[f"{name}_mean"] = float(np.mean(estimates))
+                summary[f"{name}_bias"] = float(np.mean(errors))
+                summary[f"{name}_rmse"] = float(
+                    np.sqrt(np.mean(errors**2))
+                )
+
+        if successful:
+            summary["median_drift_error_successful"] = float(
+                np.median([
+                    row["drift_error"] for row in successful
+                ])
+            )
+            summary["median_offset_error_successful"] = float(
+                np.median([
+                    row["offset_error"] for row in successful
+                ])
+            )
+
+        summaries.append(summary)
+
+    return summaries
+
+
+# Check summary arithmetic and failure handling before expensive fitting.
+def _check_summary():
+    truth = np.zeros(len(PARAMETER_NAMES))
+
+    def example(success, value, seconds):
+        row = {
+            "duration": 100.0,
+            "success": success,
+            "seconds": seconds,
+            "drift_error": abs(value),
+            "offset_error": abs(value),
+        }
+        row.update({name: value for name in PARAMETER_NAMES})
+        return row
+
+    # Successful errors 1 and 3 give mean/bias 2 and RMSE sqrt(5).
+    rows = [example(True, 1.0, 1.0), example(True, 3.0, 3.0)]
+    summary = _summarize_runs(rows, truth)[0]
+    for name in PARAMETER_NAMES:
+        np.testing.assert_allclose(summary[f"{name}_mean"], 2.0)
+        np.testing.assert_allclose(summary[f"{name}_bias"], 2.0)
+        np.testing.assert_allclose(summary[f"{name}_rmse"], np.sqrt(5.0))
+    np.testing.assert_allclose(summary["median_drift_error_successful"], 2.0)
+    np.testing.assert_allclose(summary["median_offset_error_successful"], 2.0)
+
+    # A failed finite candidate is counted but excluded from accuracy statistics.
+    rows.append(example(False, 1000.0, 5.0))
+    summary = _summarize_runs(rows, truth)[0]
+    np.testing.assert_equal(
+        [summary["attempted"], summary["successful"], summary["failed"]],
+        [3, 2, 1],
+    )
+    np.testing.assert_allclose(summary["success_rate"], 2.0 / 3.0)
+    np.testing.assert_allclose(summary["mean_seconds_all_attempts"], 3.0)
+    for name in PARAMETER_NAMES:
+        np.testing.assert_allclose(summary[f"{name}_rmse"], np.sqrt(5.0))
+
+    # No successful estimates must yield unavailable accuracy, not zero error.
+    summary = _summarize_runs([example(False, np.nan, 1.0)], truth)[0]
+    np.testing.assert_equal(summary["successful"], 0)
+    np.testing.assert_equal(summary["failed"], 1)
+    for name in PARAMETER_NAMES:
+        for suffix in ("mean", "bias", "rmse"):
+            np.testing.assert_equal(np.isnan(summary[f"{name}_{suffix}"]), True)
+    for field in ("median_drift_error_successful", "median_offset_error_successful"):
+        np.testing.assert_equal(np.isnan(summary[field]), True)
+    np.testing.assert_equal(_summarize_runs([], truth), [])
+
+
+# Write plain numeric and diagnostic records without requiring pandas.
+def _write_csv(path, rows):
+    if not rows:
+        return
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(rows[0].keys()),
         )
+        writer.writeheader()
+        writer.writerows(rows)
 
-    default_result = results["Default"]
 
-    print("\nCOEFFICIENTS AND DIAGNOSTICS")
-    for name, result in results.items():
-        print(f"\n{name}")
-        print("Estimated K:")
-        print(result.drift)
-        print("Estimated b:")
-        print(result.offset)
-        print(f"Stopping reason: {result.message}")
-        print(f"Spectral abscissa: {result.spectral_abscissa:.8f}")
-        print(f"Invalid trial evaluations: {result.invalid_evaluations}")
+# Preserve the original single-trajectory coefficient comparison.
+def _plot_reference(trajectory, model, results, output_path):
+    default = results["Default"]
 
-        if result.last_invalid_reason is not None:
-            print(f"Last invalid trial: {result.last_invalid_reason}")
+    if default is None:
+        print("Reference figure skipped: default fit raised an error.")
+        return
 
-        drift_error = np.linalg.norm(result.drift - true_drift)
-        offset_error = np.linalg.norm(result.offset - true_offset)
-        difference_from_default = np.linalg.norm(
-            result.drift - default_result.drift
-        )
-
-        print(f"Drift Frobenius error: {drift_error:.8f}")
-        print(f"Offset Euclidean error: {offset_error:.8f}")
-        print(
-            "Drift difference from default fit: "
-            f"{difference_from_default:.8f}"
-        )
-        print(
-            "NLL difference from default fit: "
-            f"{result.fun - default_result.fun:.8f}"
-        )
-
-    # 5. Plot the default fit, even if its status needs inspection.
     fig, axes = plt.subplots(
-        2,
-        2,
+        2, 2,
         figsize=(12, 9),
         constrained_layout=True,
     )
 
-    status = "success" if default_result.success else "inspect stopping message"
     fig.suptitle(
-        "Linear SDE estimation with a known connection mask\n"
-        f"Default fit: {status}; diffusion fixed"
+        "Known-structure linear estimation: seed 42\n"
+        f"Default optimizer success: {default.success}; fixed diffusion"
     )
 
-    # Observed paths.
-    ax = axes[0, 0]
-
     for node in range(2):
-        ax.plot(
-            times,
-            values[:, node],
-            linewidth=1.0,
+        axes[0, 0].plot(
+            trajectory.times,
+            trajectory.values[:, node, 0],
             label=f"Node {node + 1}",
+            linewidth=1.0,
         )
 
-    ax.set_title("Simulated observations")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("State")
-    ax.grid(alpha=0.3)
-    ax.legend()
+    axes[0, 0].set(
+        title="Simulated observations",
+        xlabel="Time",
+        ylabel="State",
+    )
+    axes[0, 0].legend()
+    axes[0, 0].grid(alpha=0.3)
 
-    # Compare offsets from every starting point.
-    ax = axes[0, 1]
     positions = np.arange(2)
-
-    ax.scatter(
+    axes[0, 1].scatter(
         positions,
-        true_offset,
-        color="black",
+        model.offset,
         marker="x",
+        color="black",
         s=90,
         label="Generating b",
         zorder=5,
     )
 
-    shifts = [-0.12, 0.0, 0.12]
+    for shift, (name, result) in zip(
+        [-0.12, 0.0, 0.12],
+        results.items(),
+    ):
+        if result is not None:
+            label = name if result.success else f"{name} (failed)"
+            axes[0, 1].scatter(
+                positions + shift,
+                result.offset,
+                label=label,
+            )
 
-    for shift, (name, result) in zip(shifts, results.items()):
-        ax.scatter(
-            positions + shift,
-            result.offset,
-            label=name,
-        )
+    axes[0, 1].set_xticks(positions, ["Node 1", "Node 2"])
+    axes[0, 1].set(title="Offset estimates", ylabel="b")
+    axes[0, 1].legend(fontsize=8)
+    axes[0, 1].grid(alpha=0.3)
 
-    ax.set_xticks(positions, ["Node 1", "Node 2"])
-    ax.set_title("Constant offset estimates")
-    ax.set_ylabel("Offset b")
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8)
-
-    # Use the same color range for both drift matrices.
-    color_limit = max(
-        float(np.max(np.abs(true_drift))),
-        float(np.max(np.abs(default_result.drift))),
+    limit = max(
+        float(np.max(np.abs(model.drift))),
+        float(np.max(np.abs(default.drift))),
         1e-12,
     )
 
-    matrices = [
-        (axes[1, 0], true_drift, "Generating drift K"),
-        (axes[1, 1], default_result.drift, "Estimated drift K: default fit"),
-    ]
-
-    for ax, matrix, title in matrices:
+    for ax, matrix, title in [
+        (axes[1, 0], model.drift, "Generating K"),
+        (axes[1, 1], default.drift, "Estimated K: default"),
+    ]:
         heatmap = ax.imshow(
             matrix,
             cmap="coolwarm",
-            vmin=-color_limit,
-            vmax=color_limit,
+            vmin=-limit,
+            vmax=limit,
         )
-
-        ax.set_title(title)
-        ax.set_xlabel("Source node")
-        ax.set_ylabel("Receiving node")
+        ax.set(
+            title=title,
+            xlabel="Source node",
+            ylabel="Receiving node",
+        )
         ax.set_xticks([0, 1], ["Node 1", "Node 2"])
         ax.set_yticks([0, 1], ["Node 1", "Node 2"])
 
@@ -264,22 +388,271 @@ def main() -> None:
         label="Drift coefficient",
         shrink=0.8,
     )
+    fig.savefig(output_path, dpi=180)
 
-    # Save a reproducible figure inside the project.
+
+# Show empirical parameter spread; these are not confidence intervals.
+def _plot_recovery(records, true_parameters, output_path):
+    durations = sorted({row["duration"] for row in records})
+
+    fig, axes = plt.subplots(
+        2, 3,
+        figsize=(13, 8),
+        constrained_layout=True,
+    )
+    fig.suptitle(
+        "Parameter recovery across seeds and observation durations\n"
+        "Successful fits only; empirical spread is not a confidence interval"
+    )
+
+    for ax, name, truth in zip(
+        axes.flat,
+        PARAMETER_NAMES,
+        true_parameters,
+    ):
+        ax.axhline(
+            truth,
+            color="black",
+            linestyle="--",
+            label="Generating value",
+        )
+
+        for position, duration in enumerate(durations):
+            rows = [
+                row for row in records
+                if row["duration"] == duration and row["success"]
+            ]
+
+            if rows:
+                jitter = np.linspace(-0.12, 0.12, len(rows))
+                ax.scatter(
+                    position + jitter,
+                    [row[name] for row in rows],
+                    alpha=0.8,
+                )
+
+        ax.set_xticks(
+            range(len(durations)),
+            [f"{duration:.0f}" for duration in durations],
+        )
+        ax.set(
+            title=name,
+            xlabel="Observation duration",
+            ylabel="Estimate",
+        )
+        ax.grid(alpha=0.3)
+
+    axes.flat[0].legend(fontsize=8)
+
+    # Show failure counts so excluded estimates remain visible.
+    ax = axes.flat[5]
+
+    successful_counts = []
+    failed_counts = []
+
+    for duration in durations:
+        rows = [
+            row for row in records
+            if row["duration"] == duration
+        ]
+        count = sum(row["success"] for row in rows)
+        successful_counts.append(count)
+        failed_counts.append(len(rows) - count)
+
+    positions = np.arange(len(durations))
+
+    ax.bar(
+        positions,
+        successful_counts,
+        label="Successful",
+    )
+    ax.bar(
+        positions,
+        failed_counts,
+        bottom=successful_counts,
+        label="Failed",
+        color="tab:red",
+    )
+
+    ax.set_xticks(
+        positions,
+        [f"{duration:.0f}" for duration in durations],
+    )
+    ax.set(
+        title="All attempts",
+        xlabel="Observation duration",
+        ylabel="Count",
+    )
+    ax.legend()
+
+    fig.savefig(output_path, dpi=180)
+
+
+# Run the reference example and the repeated-sample evaluation.
+def main() -> None:
+    _check_summary()
+    print("Summary checks passed: arithmetic, failed fits, and no successes.", flush=True)
+
+    model, initial_state, mask = _build_reference_model()
+
+    true_parameters = np.array([
+        model.drift[0, 0],
+        model.drift[1, 0],
+        model.drift[1, 1],
+        model.offset[0],
+        model.offset[1],
+    ])
+
     project_root = Path(__file__).resolve().parents[1]
     output_dir = project_root / "experiments" / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = output_dir / "linear_estimation.png"
-    fig.savefig(output_path, dpi=180)
+    print("REFERENCE EXPERIMENT: seed 42", flush=True)
 
-    print(f"\nFigure saved to: {output_path}")
-    print(
-        "This experiment estimates strengths under a supplied mask; "
-        "it does not discover unknown connections."
+    reference_trajectory = _simulate_case(
+        model=model,
+        initial_state=initial_state,
+        intervals=np.tile([0.3, 0.7], 100),
+        seed=42,
     )
 
-    plt.show()
+    starting_points = {
+        "Default": None,
+        "Diagonal": np.array([
+            [-0.4, 0.0],
+            [0.0, -0.4],
+        ]),
+        "Opposite coupling": np.array([
+            [-1.5, 0.0],
+            [-0.4, -1.2],
+        ]),
+    }
+
+    reference_records = []
+    reference_results = []
+
+    for name, initial_drift in starting_points.items():
+        record, result = _fit_case(
+            trajectory=reference_trajectory,
+            model=model,
+            mask=mask,
+            seed=42,
+            case=name,
+            initial_drift=initial_drift,
+        )
+        reference_records.append(record)
+        reference_results.append((name, result))
+
+    reference_results = dict(reference_results)
+
+    true_score = linear_negative_log_likelihood(
+        trajectory=reference_trajectory,
+        model=model,
+    )
+    print(f"\nReference NLL at generating parameters: {true_score:.8f}")
+
+    for name, result in reference_results.items():
+        if result is not None:
+            print(f"\n{name}: success={result.success}")
+            print("Estimated K:")
+            print(result.drift)
+            print("Estimated b:")
+            print(result.offset)
+            print(f"NLL: {result.fun:.8f}")
+            print(f"Message: {result.message}")
+
+    _write_csv(
+        output_dir / "linear_estimation_reference.csv",
+        reference_records,
+    )
+    _plot_reference(
+        reference_trajectory,
+        model,
+        reference_results,
+        output_dir / "linear_estimation.png",
+    )
+
+    print("\nREPEATED-SAMPLE EXPERIMENT", flush=True)
+
+    records = []
+    seeds = range(10)
+    pair_counts = (100, 300)
+    runs_path = output_dir / "linear_estimation_runs.csv"
+
+    for pair_count in pair_counts:
+        intervals = np.tile([0.3, 0.7], pair_count)
+
+        for seed in seeds:
+            trajectory = _simulate_case(
+                model=model,
+                initial_state=initial_state,
+                intervals=intervals,
+                seed=seed,
+            )
+
+            record, _ = _fit_case(
+                trajectory=trajectory,
+                model=model,
+                mask=mask,
+                seed=seed,
+                case="Default",
+            )
+            records.append(record)
+
+            # Save progress after every attempt.
+            _write_csv(runs_path, records)
+
+    summaries = _summarize_runs(records, true_parameters)
+
+    print("\nSUMMARY")
+    print("Bias and RMSE below are conditional on successful fits.")
+
+    for summary in summaries:
+        print(
+            f"\nDuration={summary['duration']:.0f}, "
+            f"attempted={summary['attempted']}, "
+            f"successful={summary['successful']}, "
+            f"failed={summary['failed']}"
+        )
+        print(
+            f"Mean seconds per attempt: "
+            f"{summary['mean_seconds_all_attempts']:.2f}"
+        )
+        print(
+            f"{'Parameter':<12}"
+            f"{'Mean':>12}"
+            f"{'Bias':>12}"
+            f"{'RMSE':>12}"
+        )
+
+        for name in PARAMETER_NAMES:
+            print(
+                f"{name:<12}"
+                f"{summary[f'{name}_mean']:>12.6f}"
+                f"{summary[f'{name}_bias']:>12.6f}"
+                f"{summary[f'{name}_rmse']:>12.6f}"
+            )
+
+    _write_csv(
+        output_dir / "linear_estimation_summary.csv",
+        summaries,
+    )
+    _plot_recovery(
+        records,
+        true_parameters,
+        output_dir / "linear_estimation_recovery.png",
+    )
+
+    print(f"\nOutputs saved under: {output_dir}")
+    print(
+        "Ten seeds provide an initial diagnostic, not a guarantee "
+        "of parameter accuracy or confidence-interval coverage."
+    )
+
+    if "agg" != plt.get_backend().lower():
+        plt.show()
+
+    plt.close("all")
 
 
 if __name__ == "__main__":

@@ -1,14 +1,14 @@
 # Dynsample: Stochastic Dynamics and Graph Inference
 
-A Python research project for estimating dynamical relationships between nodes from finite time-series observations, with explicit assumptions and reliability evaluation.
+A Python research project for extracting mathematically defined relationship descriptors from finite node time series, evaluating their reliability, and tracking their changes. Relationships need a numerical definition, not a behavioral name.
 
 The intended workflow is:
 
 ```text
 Node time series + timestamps
-    -> Estimate node states and dynamical relationships
-    -> Track state evolution and changes in relationships
-    -> Assess reliability and visualize the results
+    -> Estimate numerical relationship descriptors
+    -> Check support, uncertainty, and reproducibility
+    -> Compare relationships across time and inspect affected nodes/features
 ```
 
 **Current status:** scalar stochastic-model foundations, coupled linear simulation, and linear parameter estimation under a supplied connection mask are implemented. Unknown graph estimation, dynamic graphs, general missing-data inference, and calibrated reliability evaluation are planned, not implemented.
@@ -159,9 +159,15 @@ See the [experiment record](docs/EXPERIMENTS.md) for reproducible settings, meas
 
 ## Development Direction
 
-The goal is a reusable scientific and engineering tool for estimating relationships, evaluating their reliability, and tracking their changes. Start with complete observations and static sparse linear dynamics. Parameters are intermediate tools for these tasks; exact recovery of every coefficient or a unique underlying equation is not the product requirement. Missing-state reconstruction supports this goal.
+The goal is a reusable scientific and engineering tool for extracting numerical descriptions of relationships, checking their support, and locating changes. Start with complete observations and static sparse linear dynamics. The linear SDE is the first estimator, not a claim that every relationship follows one universal equation. Exact recovery of every coefficient or a unique underlying mechanism is not the product requirement. Missing-state reconstruction supports this goal.
 
 ### What a Connection Means
+
+A **relationship descriptor** is a specified quantity computed from data or an estimated model, with declared source/target nodes and feature channels, time support, units, and assumptions. It may describe direct dynamical dependence, finite-horizon propagation, or shared random variation. These are separate mathematical objects, not interchangeable edge meanings. No automatic behavioral classification or semantic naming is required.
+
+A computed descriptor is a candidate measurement, not automatically a reproducible pattern. Numerical validity, statistical support, and usefulness for a declared evaluation must be assessed separately. Zero, positive, and negative summarize some scalar descriptors; they do not exhaust all possible relationships. A graph is one view of selected descriptors, not the entire result.
+
+See the [relationship definition and result contract](docs/DEVELOPMENT_PLAN.md#appendix-e-relationship-definitions-and-result-contract) for scope, examples, and planned checks.
 
 The initial model is `dX = (K X + b) dt + B dW`. For scalar node states, an off-diagonal entry `K[i,j] != 0` defines a direct model-based dynamical dependence from node j to node i. Diagonal entries describe self-dynamics. A positive or negative coefficient describes the direction of its contribution to drift while other states are held fixed; it is not a behavioral label or proof of causation.
 
@@ -189,7 +195,7 @@ Planned visualization includes a timeline, node states, relationship strengths, 
 
 ### Scope and Validation
 
-Relationship estimation and change detection are the main objectives. Predicting node states conditional on a fitted model is distinct from predicting future relationships; the latter requires a separate evolution model and remains optional research. The project does not promise unrestricted equation discovery, causal identification, or automatic behavioral interpretation.
+Relationship description, support assessment, and change localization are the main objectives. Predicting node states conditional on a fitted model is distinct from predicting future relationships; the latter requires a separate evolution model and remains optional research. The project does not promise unrestricted equation discovery, causal identification, or automatic behavioral interpretation.
 
 Validate graph recovery on synthetic systems with hidden ground-truth edges: independent nodes, one-way and reciprocal effects, common drivers, indirect chains, selected feature channels, propagation on fixed graphs, and changing connections. Vary seeds, observation duration, sampling intervals, noise, and effect sizes. Evaluate false and missed edges, stability, held-out predictive value, and, for changing graphs, false alarms and detection delay. A convincing animation or optimizer success flag is not sufficient evidence.
 
@@ -197,8 +203,8 @@ Extend model expressiveness incrementally: static linear dynamics first, then ob
 
 | Milestone | Planned objective |
 | --- | --- |
-| R1 | Static graph estimation from complete observations; scalar-node validation followed by limited multi-feature block inference, channel inspection, and a late-stage automatic grouping/aggregate-view prototype. |
-| R2 | Piecewise-changing relationships, dynamic group tracking, and hierarchical computation benchmarks. |
+| R1 | Static relationship descriptors with explicit node/feature mapping and diagnostics; sparse graph views, limited multi-feature inference, and a bounded grouping prototype. |
+| R2 | Comparable relationship descriptors across time; change localization, dynamic group tracking, and hierarchical computation benchmarks. |
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 
@@ -208,8 +214,8 @@ The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of trut
 
 ## Current Limitations
 
-- No graph fitting or calibrated parameter intervals yet. Automatic profile search is heuristic and budget-limited; unbounded joint optimization can still fail numerically.
-- Adjacency uses source-to-target indexing: `adjacency[i,j]` means i→j. Planned drift K[i,j] acts from j→i; conversion must preserve this distinction.
+- Unknown-edge selection and calibrated parameter intervals are not implemented; masked linear parameter fitting is available. Automatic profile search is heuristic and budget-limited; unbounded joint optimization can still fail numerically.
+- Adjacency uses source-to-target indexing: `adjacency[i,j]` means i→j. Drift K[i,j] acts from j→i; conversion preserves this distinction.
 - Zero-volatility Brownian bridges currently interpolate even incompatible distinct endpoints. This behavior needs correction before release; use positive volatility for stochastic bridge examples.
 - Clean-environment installation verification and the remaining data-contract checks are release tasks recorded in the plan.
 
@@ -219,7 +225,7 @@ The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of trut
 src/dynsample/
     core/                       # State, Trajectory, Observation, Graph, LinearSDE
     simulation/                 # Brownian, scalar OU, and coupled linear SDE simulation
-    estimation/                 # Scalar Brownian and OU fitting
+    estimation/                 # Scalar fitting and masked coupled linear estimation
     inference/reconstruction/   # Brownian bridge sampling
     metrics/                    # Placeholder
     sampling/                   # Placeholder
