@@ -36,8 +36,9 @@ class Trajectory:
         #that all subsequent computations may proceed without needless
         #distinction between Python sequences and NumPy arrays.
 
-        self.times = np.asarray(self.times, dtype=np.float64)
-        self.values = np.asarray(self.values, dtype = np.float64)
+        # Own the arrays so changes to caller inputs cannot invalidate them.
+        self.times = np.array(self.times, dtype=np.float64, copy=True)
+        self.values = np.array(self.values, dtype=np.float64, copy=True)
 
         #The times ought to form one simple succession:
         #
@@ -101,7 +102,13 @@ class Trajectory:
         #
         # every one of which must consequently be greater than zero.
 
-        if np.any(np.diff(self.times) <= 0):
+        with np.errstate(over="ignore", invalid="ignore"):
+            intervals = np.diff(self.times)
+
+        if not np.all(np.isfinite(intervals)):
+            raise ValueError("time intervals must be finite")
+
+        if np.any(intervals <= 0):
             raise ValueError(
                 "times must be strictly increasing"
             )
@@ -141,7 +148,10 @@ class Trajectory:
 
     def state_at(self, index: int) -> State:
         """
-        Return the state belonging to the time at the given index.
+        Return an independent state snapshot at the given index.
+
+        Mutating the returned values does not change this trajectory,
+        and later trajectory changes do not change the snapshot.
 
         The selected portion of ``values`` hath shape
         (n_nodes, n_features), and is therefore fit to constitute
@@ -149,7 +159,5 @@ class Trajectory:
         """
         return State(
             time = self.times[index],
-            values = self.values[index],
+            values = self.values[index].copy(),
         )
-
-       

@@ -153,8 +153,6 @@ def linear_step(
     if not np.all(np.isfinite(next_values)):
         raise FloatingPointError("next state contains non-finite values")
 
-    eigenvalues = np.max(eigenvalues) * standard_noise
-
     return State(
         time = next_time,
         values = next_values[:, None],

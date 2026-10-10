@@ -48,14 +48,24 @@ def ou_negative_log_likelihood(
         if not np.isfinite(variance) or variance <= 0.0:
             raise ValueError("transition variance must be finite and positive")
 
-        mean = transition * values[i - 1] + offset
-        residual = values[i] - mean
+        with np.errstate(over="ignore", invalid="ignore"):
+            mean = transition * values[i - 1] + offset
+            residual = values[i] - mean
 
-        total += 0.5 * (
-            np.log(2.0 * np.pi)
-            + np.log(variance)
-            + residual**2 / variance
-        )
+        if not np.isfinite(residual):
+            raise FloatingPointError(f"non-finite residual at transition {i}")
+
+        # Standardize before squaring to avoid overflowing a finite ratio.
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            standardized_residual = residual / np.sqrt(variance)
+            total += 0.5 * (
+                np.log(2.0 * np.pi)
+                + np.log(variance)
+                + standardized_residual**2
+            )
+
+        if not np.isfinite(total):
+            raise FloatingPointError(f"non-finite likelihood at transition {i}")
 
     return float(total)
 

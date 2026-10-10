@@ -10,6 +10,37 @@ from dynsample.estimation.ou import _profile_ou_mu, _profile_ou_sigma
 from dynsample.estimation.ou import _profile_ou_negative_log_likelihood
 from scipy.optimize import minimize, minimize_scalar
 
+def test_ou_likelihood_large_values_matches_gaussian_density() -> None:
+    from scipy.stats import norm
+
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.array([0.0, 1e200])[:, None, None],
+    )
+    # For alpha=1 and dt=1, compute the standard deviation directly.
+    scale = 1e150 * np.sqrt((1.0 - np.exp(-2.0)) / 2.0)
+    expected = -norm.logpdf(1e200, loc=0.0, scale=scale)
+    with np.errstate(over="raise", invalid="raise"):
+        actual = ou_negative_log_likelihood(trajectory, 1.0, 0.0, 1e150)
+    assert np.isfinite(actual)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "values, message",
+    [([1e308, -1e308], "non-finite residual"),
+     ([0.0, 1e200], "non-finite likelihood")],
+)
+def test_ou_likelihood_rejects_nonfinite_arithmetic(values, message) -> None:
+    trajectory = Trajectory(
+        times=np.array([0.0, 0.1]),
+        values=np.array(values)[:, None, None],
+    )
+    with np.errstate(over="raise", invalid="raise"):
+        with pytest.raises(FloatingPointError, match=message):
+            ou_negative_log_likelihood(trajectory, 1.0, 0.0, 1.0)
+
+
 def test_ou_likelihood_irregular_times() -> None:
     trajectory = Trajectory(
         times = np.array([0.0, 1.0, 3.0]),
