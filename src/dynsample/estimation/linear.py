@@ -89,7 +89,6 @@ def linear_negative_log_likelihood(
 
 # Estimate the constant offset by weighted least squares with fixed K and B.
 def fit_linear_offset(
-
     trajectory: Trajectory,
     drift: NDArray[np.float64],
     diffusion: NDArray[np.float64],
@@ -241,14 +240,17 @@ def fit_linear_offset(
 def fit_linear_drift(
         trajectory: Trajectory,
         diffusion: NDArray[np.float64],
-        drift_mask: NDArray[np.bool_],
+        drift_mask: NDArray[np.bool_] | None = None,
         initial_drift: NDArray[np.float64] | None = None,
         maxiter: int = 300,
 ) -> OptimizeResult:
-    """Fit K and b with fixed B and a supplied drift mask."""
+    """Fit K and b with fixed B and optional drift restrictions."""
     n = trajectory.n_nodes
     # Validate the mask without silently converting numbers to booleans.
-    mask = np.asarray(drift_mask)
+    if drift_mask is None:
+        mask = np.ones((n, n), dtype=bool)
+    else:
+        mask = np.asarray(drift_mask)
 
     
     if mask.shape != (n, n):

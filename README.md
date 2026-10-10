@@ -21,6 +21,7 @@ Node time series + timestamps
 | Linear model specification | `LinearSDE` stores constant drift, offset, and diffusion arrays with shape and finite-value validation. |
 | Coupled linear simulation | Exact matrix transitions, single-step sampling, and irregular-time trajectories with one feature per node; singular positive-semidefinite simulation covariance is supported. |
 | Linear estimation | Exact conditional NLL, weighted least-squares offset fitting, and masked drift fitting with fixed diffusion; complete observations `(T,N,1)`. |
+| Linear prediction | `predict_linear` returns conditional mean trajectories and marginal process covariances from one exact initial state, with fixed model parameters. |
 | Brownian simulation | Independent increments with shared scalar volatility on irregular times. |
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
@@ -120,7 +121,7 @@ print(result.drift, result.offset)
 print(result.fun, result.success, result.message)
 ```
 
-`K[i,j]` acts from node j to node i. The mask permits self-dynamics and node 1 -> node 2; excluded coefficients remain zero. `True` permits estimation, rather than asserting a nonzero edge. The mask is currently required. `initial_drift` is optional; the default starts from `-I / duration`, with excluded entries zeroed.
+`K[i,j]` acts from node j to node i. The mask permits self-dynamics and node 1 -> node 2; excluded coefficients remain zero. `True` permits estimation, rather than asserting a nonzero edge. The mask is optional: omitted or `None` permits all drift entries; this does not perform sparse edge selection. `initial_drift` is optional; the default starts from `-I / duration`, with excluded entries zeroed.
 
 `fit_linear_offset` solves for b by whitened least squares with fixed K and B. `fit_linear_drift` profiles out b during a single-start Powell search over permitted K entries. Named result fields include `model`, `drift`, `offset`, `fun`, `initial_fun`, `success`, `message`, and `spectral_abscissa`. Stability is reported, not imposed. Numerical convergence is not proof of global optimality or parameter accuracy. Missing-state reconstruction and unknown-edge selection are not implemented here.
 
