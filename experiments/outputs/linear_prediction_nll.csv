@@ -1,0 +1,3 @@
+model,validation_transitions,conditional_nll,nll_per_transition
+Training fit,61,29.770672181148203,0.4880438062483312
+Generating model,61,29.055501873880687,0.47631970285050307

@@ -243,16 +243,16 @@ NLL at the generating parameters is **74.59130110**. The default fit has drift F
 
 ### Repeated seeds and observation durations
 
-**Evidence:** user execution on 2026-10-08, after adding summary self-checks to the working experiment based on v033 (`9a3ac1e`). The saved CSV files were inspected for this record. This documentation update did not rerun all 23 fits or the full test suite. The previous 326-test result belongs to the earlier implementation validation, not a new test run.
+**Evidence:** user execution on 2026-10-11, using the working experiment on top of v036 (`7fcbf32`). Saved CSV files were inspected for this update. The user reported 17 prediction-metric tests passing and subsequently reported the full suite passing, without a total count. This documentation update did not rerun the experiment or tests.
 
-**Design:** preserve the seed-42 reference and add seeds 0–9 at durations 100 and 300, with alternating intervals 0.3/0.7. This gives 201 and 601 observations respectively. All 20 repeated fits use the default initialization, fixed generating B, the same supplied mask, and a 150-iteration limit. Paired seeds extend the same simulated path at the longer duration under the current simulator; comparisons across durations are therefore dependent. The complete script performs 23 fits.
+**Design:** preserve the seed-42 reference and add seeds 0–9 at durations 100 and 300, with alternating intervals 0.3/0.7. This gives 201 and 601 observations respectively. All 20 repeated fits use the default initialization, fixed generating B, the same supplied mask, and a 150-iteration limit. Paired seeds extend the same simulated path at the longer duration under the current simulator; comparisons across durations are therefore dependent. With the new training-only prediction fit, the complete script performs 24 fits when `RUN_RECOVERY=True`.
 
 Before fitting, `_check_summary` verifies hand-calculated mean/bias/RMSE, failure counting and exclusion, and unavailable statistics when no fit succeeds. These lightweight checks run inside the experiment; they are not additional pytest cases.
 
 | Duration | Observations | Attempts | Successful | Failed | Mean seconds per attempt |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 100 | 201 | 10 | 10 | 0 | 2.60 |
-| 300 | 601 | 10 | 10 | 0 | 8.69 |
+| 100 | 201 | 10 | 10 | 0 | 2.46 |
+| 300 | 601 | 10 | 10 | 0 | 7.91 |
 
 The following statistics use successful fits only; the denominator is 10 at each duration in this run. Bias is the mean signed error; RMSE is the square root of the mean squared error. Failed finite candidates remain in the raw records but are excluded from these accuracy statistics; an all-failed condition reports unavailable values, not zero error.
 
@@ -275,7 +275,53 @@ The following statistics use successful fits only; the denominator is 10 at each
 - [Summary statistics](../experiments/outputs/linear_estimation_summary.csv): per-duration counts, bias, RMSE, and median errors.
 - [Reference figure](../experiments/outputs/linear_estimation.png) and [recovery figure](../experiments/outputs/linear_estimation_recovery.png).
 
-**Scope and next step:** this completes the initial repeated-seed/duration check for the known-structure baseline. Ten seeds do not establish estimator consistency, universal success, or calibrated intervals. The model is correctly specified, observations are complete/exact, B is known, and one forbidden coefficient is imposed by the mask. Unknown-edge selection, missing observations, and changing relationships are not evaluated. Proceed to the optional-mask interface; retain the planned no-edge controls, prediction evaluation, and estimated-noise checks.
+**Scope and next step:** this completes the initial repeated-seed/duration check for the known-structure baseline. Ten seeds do not establish estimator consistency, universal success, or calibrated intervals. The model is correctly specified, observations are complete/exact, B is known, and one forbidden coefficient is imposed by the mask. Unknown-edge selection, missing observations, and changing relationships are not evaluated. The optional-mask interface and initial prediction evaluation are now implemented. Retain the numerical review gates, time-unit/no-edge controls, and estimated-noise checks in the development plan.
+
+### Chronological prediction validation
+
+Run the same script from the repository root:
+
+```bash
+python -m experiments.experiment_linear_estimation
+```
+
+**Protocol:** use the seed-42 trajectory above. `_split_trajectory` assigns the first 140 observations to training and the remaining 61 to validation, using 70% of the observation count, not 70% of elapsed time. The final training time is 69.3; the first validation time is 70.0. `_run_prediction_experiment` performs a fresh training-only fit, with the supplied mask and generating diffusion B fixed. It does not reuse the full-data reference estimates. Training optimization reports success with NLL 41.738046. An unsuccessful training fit is recorded and prediction evaluation is skipped.
+
+- **Fixed origin:** condition every forecast on the final training state. Its persistence baseline repeats that same state throughout validation.
+- **Updated one step:** `_one_step_predictions` uses the immediately preceding actual observation, including earlier validation observations as they become available. Parameters remain fixed. Its persistence baseline predicts the preceding observation.
+- **Scoring:** `_score_predictions` uses `prediction_metrics` with exact timestamp/shape alignment. RMSE and MAE weight all observations equally, including irregular intervals; per-node scores average over time and features. The known initial state is not a scored target.
+
+| Method | Overall RMSE | Overall MAE | Node 1 RMSE | Node 2 RMSE |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed-origin model | 0.407586 | 0.316341 | 0.409789 | 0.405371 |
+| Fixed-origin persistence | 0.422322 | 0.344262 | 0.418272 | 0.426333 |
+| One-step model | 0.309048 | 0.248388 | 0.327674 | 0.289225 |
+| One-step persistence | 0.353830 | 0.283088 | 0.367358 | 0.339762 |
+
+Relative to the corresponding persistence baseline, RMSE decreases by approximately 3.5% for fixed-origin forecasts and 12.7% for one-step predictions. The one-step protocol has more information; comparisons between protocols do not isolate model quality.
+
+**Conditional path likelihood:** prepend the last training observation to the validation path and reuse `linear_negative_log_likelihood`. This scores 61 transitions into validation observations, conditional on the training endpoint. It does not multiply fixed-origin marginal densities as if future states were independent.
+
+| Model | Validation conditional NLL | NLL per transition |
+| --- | ---: | ---: |
+| Training fit | 29.770672 | 0.488044 |
+| Generating model | 29.055502 | 0.476320 |
+
+The generating model is a synthetic reference, not a fitted competitor available on real data. Lower NLL is better on the same observations; the generating parameters need not minimize every finite-sample score. Persistence baselines specify only point predictions, so no density score is assigned to them.
+
+![Chronological fixed-origin and one-step prediction comparison](../experiments/outputs/linear_prediction.png)
+
+The shaded fixed-origin band is the per-node mean plus/minus 1.96 marginal process standard deviations under fixed fitted parameters. It excludes parameter uncertainty and is not a simultaneous path band; empirical coverage has not been evaluated. Lines between irregular observation times are plotting guides.
+
+**Saved artifacts:**
+
+- [Training-only fit](../experiments/outputs/linear_prediction_fit.csv).
+- [Overall and per-node RMSE/MAE](../experiments/outputs/linear_prediction_metrics.csv).
+- [Conditional validation NLL](../experiments/outputs/linear_prediction_nll.csv).
+- [Observed values, predicted means, and fixed-origin marginal variances](../experiments/outputs/linear_prediction_values.csv).
+- [Prediction figure](../experiments/outputs/linear_prediction.png).
+
+**Scope:** one correctly specified synthetic trajectory with complete exact observations, supplied structure, and fixed B. Beating persistence here does not establish general predictive superiority, uncertainty calibration, or that the cross-node coupling supplies the gain; an independent-node model comparison remains planned. Long-horizon/stiff numerical robustness remains subject to R1-00. Setting `RUN_RECOVERY=False` skips the 20 recovery fits but retains the reference and prediction experiments; existing recovery artifacts are not regenerated in that mode.
 
 ## Updating this record
 

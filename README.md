@@ -22,6 +22,7 @@ Node time series + timestamps
 | Coupled linear simulation | Exact matrix transitions, single-step sampling, and irregular-time trajectories with one feature per node; singular positive-semidefinite simulation covariance is supported. |
 | Linear estimation | Exact conditional NLL, weighted least-squares offset fitting, and masked drift fitting with fixed diffusion; complete observations `(T,N,1)`. |
 | Linear prediction | `predict_linear` returns conditional mean trajectories and marginal process covariances from one exact initial state, with fixed model parameters. |
+| Prediction scoring | `prediction_metrics` reports overall and per-node RMSE/MAE on exactly aligned trajectories, with equal observation weights. |
 | Brownian simulation | Independent increments with shared scalar volatility on irregular times. |
 | OU simulation | Exact independent scalar transitions and trajectory simulation on irregular times. |
 | Brownian bridge | Single-point and joint multi-point conditional sampling between supplied endpoints. |
@@ -209,9 +210,11 @@ Extend model expressiveness incrementally: static linear dynamics first, then ob
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 
-The next step is repeated-seed and observation-duration validation of known-structure fitting, followed by remaining stage C work, unknown scalar-node graphs, limited multi-feature inference, and R1 validation. Coupled simulation and scalar drift-to-graph conversion are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
+Initial repeated-seed/duration validation and chronological prediction scoring are implemented. The next priority is the recorded long-horizon transition numerical fix and per-evaluation factorization reuse, followed by remaining stage C time-unit, no-edge, stability, and noise-estimation checks; unknown scalar-node graphs, limited multi-feature inference, and R1 validation follow. Coupled simulation and scalar drift-to-graph conversion are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
 
 The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of truth for stage dependencies, each file/function's responsibility, acceptance criteria, and deferred work. Its appendices contain the [mathematical reference](docs/DEVELOPMENT_PLAN.md#appendix-b-mathematical-and-modeling-reference) and [evaluation principles](docs/DEVELOPMENT_PLAN.md#appendix-c-evaluation-principles-across-releases). Planned APIs are explicitly distinguished from existing functionality.
+
+The linear estimation experiment also fits on the first 140 of 201 observations and scores the remaining 61. In the seed-42 example, fixed-origin RMSE is 0.407586 versus 0.422322 for persistence; updated one-step RMSE is 0.309048 versus 0.353830 for its persistence baseline. These are single-trajectory results with supplied structure and diffusion, not evidence of unknown-edge recovery or a general forecasting advantage. See the [prediction protocol, scores, and figure](docs/EXPERIMENTS.md#chronological-prediction-validation).
 
 ## Current Limitations
 

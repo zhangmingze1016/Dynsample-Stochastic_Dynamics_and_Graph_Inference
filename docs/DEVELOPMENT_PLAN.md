@@ -48,7 +48,7 @@ Schedule verifiable work units rather than rigid day counts: C likelihood and kn
 - Implemented: `LinearSDE`, `linear_transition`, `linear_step`, and `simulate_linear`, with one feature per node. Sampling handles positive-semidefinite covariance through a checked eigendecomposition. Extreme block-exponential overflow is reported; it is not automatically resolved.
 - Coupled simulation and linear estimation have automated reference and failure tests; the current validation run is recorded in the execution log below.
 - All eight existing experiment scripts were rerun on 2026-10-05. Settings, environment, numbers, and figures are recorded in [EXPERIMENTS.md](EXPERIMENTS.md). Experiment completion is not a substitute for test assertions or graph-recovery evaluation.
-- Completed through v032: signed drift-to-graph conversion, conditional multivariate likelihood, fixed-K offset fitting, and fixed-B masked drift fitting. The new two-node experiment compares three initializations; it does not select unknown edges. Next: repeated-seed and duration sensitivity checks before extending the fitting API.
+- Completed through v032: signed drift-to-graph conversion, conditional multivariate likelihood, fixed-K offset fitting, and fixed-B masked drift fitting. The two-node experiment now compares three initializations, repeats ten seeds at two durations, and evaluates chronological held-out predictions. Optional masks and prediction APIs are implemented; unknown-edge selection remains unimplemented. Next: preserve the R1-00 numerical review priorities before expanding validation.
 - Remaining B acceptance work: audit the current tests against the stage requirements, include direction and signed-weight tests, and verify any missing no-edge control before closing B. The existing three-node experiment replaces the proposed two-node demo; extend it only when an uncovered question justifies the change.
 
 ### Product scope and deferred extensions
@@ -57,7 +57,7 @@ Schedule verifiable work units rather than rigid day counts: C likelihood and kn
 
 **2026-10-10 review update:** Appendix F R1-00 inserts the long-horizon numerical fix and per-evaluation caching before the next expanded benchmark; optional stability restrictions follow the unconstrained baseline gates.
 
-**Main sequence (subject to R1-00 review gates, detailed in the C execution queue below):** (1) extend the existing known-structure experiment across seeds and durations, including failures; (2) validate the optional-mask contract and remaining C prediction/time-unit/noise tasks; (3) implement scalar sparse selection with baselines and no-edge controls; (4) expose descriptor metadata and graph mappings, then complete D2 feature blocks and I1 bounded grouping; (5) complete release usability and validation. No semantic classification system or new generic framework is required.
+**Main sequence:** the initial repeated-seed baseline, optional-mask interface, and C3 prediction/scoring are implemented. Address R1-00 transition numerics and per-evaluation reuse next; retain its covariance-support and optional-stability gates. Then complete C4 time-unit/no-edge checks and C5 diagonal-noise estimation, followed by scalar sparse selection, descriptor metadata, D2 feature blocks, I1 grouping, and release validation. No semantic classification system or new generic framework is required.
 
 The primary output is model-supported relationships, their reliability, and their changes; fitted coefficients serve this purpose. Keep observed states, inferred states, fixed-graph propagation, and changing relationships distinct. Behavioral labels are optional interpretation, not mandatory inference outputs. Zero, positive, and negative coefficients describe scalar dynamic channels, not every possible kind of relationship.
 
@@ -179,22 +179,22 @@ Acceptance: one node reduces to OU; uncoupled nodes reduce to independent models
 
 ## 5. C: Parameter Inference with Known Graph Structure
 
-**TODO — optional drift mask (2026-10-08; not implemented by this note).** Allow `fit_linear_drift` callers to omit `drift_mask` or pass `None`. Resolve either case to an all-True `(n_nodes, n_nodes)` mask, including diagonal self-dynamics. Preserve explicit boolean masks and keep excluded entries exactly zero. This makes fitting accessible when users have no prior structural restrictions; it does not select reliable edges or establish that every fitted nonzero coefficient represents a connection. Unknown-edge selection remains in stage D. Acceptance checks: omitted and explicit `None` masks agree with an explicit all-True mask under identical inputs; restricted masks remain enforced; invalid masks are still rejected. Add this API change after the current explicit-mask fitting baseline is validated, without changing the development sequence.
+**Implemented — optional drift mask:** `fit_linear_drift` accepts an omitted or `None` mask as all-True, including diagonal self-dynamics. Explicit boolean masks preserve excluded zeros. This enables unrestricted dense fitting, not reliable unknown-edge selection. The acceptance contract remains omitted/None/all-True equivalence, restricted-mask preservation, and invalid-mask rejection.
 
-Input: complete trajectories, a known edge mask, and initially a supplied diffusion B. Output: mask-constrained K, b, score, and numerical diagnostics. Start with fixed noise, then add estimation of positive diagonal diffusion as a separate step within this stage. Do not begin by estimating unrestricted full covariance.
+Input: complete trajectories, an optional structural mask, and initially a supplied diffusion B. Output: mask-constrained K, b, score, and numerical diagnostics. Start with fixed noise, then add estimation of positive diagonal diffusion as a separate step within this stage. Do not begin by estimating unrestricted full covariance.
 
 | File | Functions | Status and responsibility |
 | --- | --- | --- |
 | `src/dynsample/estimation/linear.py` | `linear_negative_log_likelihood` | Implemented: conditional Gaussian NLL using Cholesky solves; requires positive-definite transition covariance. |
 | Same file | `fit_linear_offset` | Implemented: fixed-K, fixed-B weighted least squares for b; rejects numerical rank deficiency. |
-| Same file | `fit_linear_drift` | Implemented: explicit boolean mask, optional initial K, profiled b, single-start Powell search, fixed B. Parameter packing and default initialization are internal; separate helper files are not required. |
+| Same file | `fit_linear_drift` | Implemented: optional boolean mask (omitted/None means all-True), optional initial K, profiled b, single-start Powell search, fixed B. Parameter packing and default initialization are internal; separate helper files are not required. |
 | `tests/estimation/test_linear_estimation.py` | Likelihood, offset, and drift tests | Implemented: independent references, masks, failure reporting, and input contracts. Broader recovery and time-rescaling validation remain. |
-| `experiments/experiment_linear_estimation.py` | `main` | Implemented: two-node known structure, irregular observations, three starts, coefficient errors and figure. Extend this script for repeated seeds and durations; do not create a duplicate known-graph experiment. |
-| `src/dynsample/inference/prediction.py` | `predict_linear` | Planned: conditional means and process covariances, distinguishing one-step updates from fixed-origin forecasts. |
+| `experiments/experiment_linear_estimation.py` | `main` | Implemented: two-node known structure, three starts, repeated seeds/durations, and chronological held-out prediction with persistence baselines, CSV records, and figures. |
+| `src/dynsample/inference/prediction.py` | `predict_linear` | Implemented: conditional means and marginal process covariances from one exact state; the experiment separates fixed-origin forecasts from observation-updated one-step predictions. |
 
 **Stability decision:** the initial implementation fits a general finite-time linear SDE and reports the maximum real drift eigenvalue; it does not constrain K to be stable. This preserves the current `LinearSDE` contract. A future optional stable family requires a separate mathematical decision and must preserve the declared mask. A negative diagonal alone is insufficient. Pause to discuss unexplained aliasing or conflicting solutions from different starts.
 
-**Remaining C work:** repeated-seed and duration evaluation, no-edge controls, optional-mask API checks described above, prediction, time-unit sensitivity, and separately validated positive diagonal diffusion estimation. Multiple starts are currently compared by the experiment, not automatically selected by the estimator. Do not describe C or R1 as complete.
+**Remaining C work:** R1-00 numerical/caching/stability/covariance gates, time-unit sensitivity, no-edge controls, and separately validated positive diagonal diffusion estimation. Initial repeated-seed and prediction evaluations are complete; broader conditions remain release validation. Multiple starts are currently compared by the experiment, not automatically selected by the estimator. Do not describe C or R1 as complete.
 
 Acceptance: match independent density references; record estimation errors across experimental conditions rather than expecting one fit to equal the truth; validate fixed and estimated noise separately; test changes of time units. C performs parameter inference, not unknown-edge selection.
 
@@ -229,7 +229,7 @@ Only the current work package creates or changes code. The C queue below specifi
 
 Added 2026-10-08. Execute these work packages in order. Names below are planned unless marked existing. Do not create empty files ahead of their task. Implementation and test code are provided for the user to enter; documentation may be maintained directly. If a mathematical gate fails, investigate it before proceeding rather than changing estimators silently.
 
-#### C1. Repeated-seed validation — immediate next task
+#### C1. Repeated-seed validation — initial baseline complete
 
 Keep the existing `experiments/experiment_linear_estimation.py`; refactor its single large `main` incrementally:
 
@@ -242,7 +242,7 @@ Keep the existing `experiments/experiment_linear_estimation.py`; refactor its si
 | `_plot_recovery` | Compare parameter estimates/errors across seeds and durations without treating empirical spread as a confidence interval. |
 | `main` (existing) | Preserve the current seed-42 three-start example, then run seeds 0–9 at durations 100 and 300 using the same alternating 0.3/0.7 intervals. Use paired seeds and keep the sampling schedule fixed when extending duration. Save a compact CSV and figure. |
 
-Add `tests/experiments/test_linear_estimation_summary.py` only for nontrivial summarization logic: `test_summary_counts_failures`, `test_summary_matches_hand_calculation`, and `test_summary_handles_no_successes`. Do not put expensive repeated fitting into unit tests.
+Implemented acceptance checks live in experiment `_check_summary`: hand-calculated statistics, failure counting/exclusion, and no-success handling. A duplicate summary test file is not required. Do not put expensive repeated fitting into unit tests.
 
 Update `docs/EXPERIMENTS.md` with settings, denominators, errors, failures, and figures. Gate: account for every run and investigate systematic discrepancies or optimization failure. Ten seeds are an initial diagnostic, not a precision guarantee; do not require every longer trajectory to improve.
 
@@ -254,13 +254,15 @@ In `tests/estimation/test_linear_estimation.py`, add `test_fit_linear_drift_opti
 
 #### C3. Conditional prediction as an independent evaluation tool
 
-Create `src/dynsample/inference/prediction.py` with `predict_linear(initial_state, times, model)` as a planned interface. For this increment, the initial state is exact: return future conditional means and process covariance matrices at specified times, conditional on that one state. Include node/time metadata; do not return a sampled trajectory as a prediction. Defer uncertain initial-state inputs until their covariance propagation contract is specified.
+**Implemented and initially validated on 2026-10-11.** `src/dynsample/inference/prediction.py` provides `predict_linear(initial_state, times, model)`, returning a mean `Trajectory` and marginal process covariance array. The initial state is exact; parameters are fixed. Node/feature ordering is positional, not an explicit ID mapping. Uncertain initial states and cross-time covariance outputs remain outside this contract.
 
-Create `tests/inference/test_linear_prediction.py`: `test_predict_linear_matches_scalar_ou`, `test_predict_linear_matches_zero_drift_reference`, `test_predict_linear_preserves_initial_state`, and `test_predict_linear_rejects_invalid_inputs` (parameterized). Verify irregular horizons and joint-noise covariance. Gate: agree with analytical references, preserve time/state shapes, and distinguish marginal covariance from covariance between different prediction times.
+`tests/inference/test_linear_prediction.py` covers analytical scalar OU, zero drift, correlated and singular covariance, irregular horizons, initial-time preservation, query-grid consistency, copying, and invalid inputs.
 
-Create `src/dynsample/metrics/prediction.py` with `prediction_metrics`: report RMSE/MAE for declared conditional means, with explicit per-node aggregation. Score joint predictive density using the existing likelihood separately; do not infer joint NLL by multiplying marginal fixed-origin densities.
+`src/dynsample/metrics/prediction.py` provides `prediction_metrics`: overall/per-node RMSE and MAE with equal observation weights and exact shape/timestamp alignment. `tests/metrics/test_prediction.py` contains 17 passing cases reported by the user, covering hand references, single/identical observations, irregular-time weighting, mismatches, empty values, nonfinite values, and overflow. Density scoring remains separate through the existing conditional likelihood.
 
-Create `tests/metrics/test_prediction.py` with `test_prediction_metrics_matches_hand_calculation` and `test_prediction_metrics_rejects_mismatched_inputs`. Extend the existing experiment with a chronological held-out segment: fit on training data only and distinguish fixed-origin forecasts from one-step predictions updated with observations.
+The existing experiment adds `_split_trajectory`, `_one_step_predictions`, `_score_predictions`, `_plot_predictions`, and `_run_prediction_experiment`. Fit only the first 140 observations; score 61 later observations. Compare each forecast protocol to its matching persistence baseline. Conditional path NLL includes the training endpoint only as a conditioning state. See [experiment results](EXPERIMENTS.md#chronological-prediction-validation).
+
+The user reports the full suite passing; no new total count was supplied. This closes the initial C3 implementation/example, not long-horizon numerical robustness, calibrated coverage, or broad predictive superiority. Preserve R1-00 before expanded validation.
 
 #### C4. Units and negative controls
 
@@ -292,7 +294,7 @@ Scope: N scalar nodes, complete exact observations, and fixed K, starting with s
 | Same file | `fit_graph` | Organize candidate fitting, selection, results, and graph conversion; return drift, offset, diffusion, graph, NLL, penalty, and diagnostics. |
 | `src/dynsample/estimation/baselines.py` | `fit_independent_ou`, `fit_discrete_var` | Supply a no-interaction baseline and a VAR baseline on suitable regular grids; do not treat irregular data as equally spaced. |
 | `src/dynsample/metrics/graph.py` | `graph_recovery_metrics` | Exclude diagonals; report precision/recall, false/missed edges, and weight errors; define empty-graph denominator behavior. |
-| `src/dynsample/metrics/prediction.py` | `prediction_metrics` | Score declared predictive means for point errors and predictive distributions for NLL; do not use random paths as point predictions. |
+| `src/dynsample/metrics/prediction.py` | `prediction_metrics` | Score declared predictive means with RMSE/MAE; use the separate conditional likelihood for path NLL. Do not use random paths as point predictions. |
 | `tests/test_sparse_graph.py`, `test_metrics.py`, `test_baselines.py` | Support/direction, empty-graph, leakage, and baseline-applicability tests | Do not establish recovery from one favorable seed. |
 | `experiments/experiment_static_graph.py` | `main` | Vary true graphs, seeds, duration, sampling density, and noise; report recovery, prediction, failures, and runtime. |
 
@@ -464,10 +466,11 @@ Mathematical checkpoint: aggregates are derived observations. A joint group-fact
 
 ## 10. Execution and Change Log
 
-Current checkpoint: v032 implements fixed-diffusion masked linear fitting. The working experiment adds a two-node parameter-recovery and initialization comparison. Stage C validation remains in progress; unknown-edge selection is not implemented. Follow acceptance evidence rather than calendar targets.
+Current checkpoint: v036 (`7fcbf32`) plus working prediction metrics and experiment updates. Optional masks, conditional predictions, and initial held-out scoring are implemented. Stage C remains in progress; unknown-edge selection is not implemented. Follow R1-00 numerical review priorities before expanded benchmarks.
 
 | Date | Task | Status/evidence | Next step |
 | --- | --- | --- | --- |
+| 2026-10-11 | Prediction metrics and chronological validation | Working `prediction_metrics`, 17 metric cases reported passing; user also reports full-suite success without a total count. Experiment: 140 training/61 validation observations; fixed-origin RMSE 0.407586 vs persistence 0.422322, one-step 0.309048 vs 0.353830. Saved CSVs inspected; documentation update did not rerun tests. | Initial C3 complete. Retain R1-00 transition/caching gates, then C4 units/no-edge controls and remaining C work. |
 | 2026-10-10 | Numerical review backlog and scheduling | Added R1-00: stable-system long-horizon transition failure, per-evaluation transition/factorization reuse, optional stability restrictions, and covariance-support documentation/tests. These remain unimplemented. | Fix transition numerics before long-horizon validation, then caching before large repeated-fit runs; design stability options after unconstrained baselines and before sparse selection. |
 | 2026-10-10 | OU likelihood and trajectory snapshots | Working-tree fix: standardize OU residuals before squaring; reject non-finite residuals/scores explicitly. `state_at` returns a copied snapshot with two-way mutation isolation; direct public-array mutation is still allowed. Added Gaussian-density and mutation regressions. | Full suite: 351 passed; changes remain uncommitted. |
 | 2026-10-08 | Relationship scope clarification | Consolidated relationship definitions in Appendix E; relationships are numerical descriptors with explicit definitions and evidence, without required semantic categories. Documentation only. | Preserve current C validation, then static descriptors/graph views in R1 and aligned comparisons in R2. |
@@ -814,7 +817,7 @@ The stages above define implementation order; see [EXPERIMENTS.md](EXPERIMENTS.m
 
 ## Appendix F. Complete Remaining R1 Work Checklist
 
-Inventory checked on 2026-10-08 against v033 and the working documentation. This consolidates C, D, D2, I1, and E into one ordered queue; it does not add a new release scope. Existing linear likelihood, fixed-K offset fitting, fixed-B masked drift fitting, coupled simulation, and scalar graph conversion are retained, not rewritten. All names for unimplemented functions are target names; mathematical gates may require an explicitly documented revision. Test functions listed below are the planned acceptance cases, not a claim that unforeseen failures will need no additional tests. Paths are repository-relative.
+Initial inventory checked on 2026-10-08; completion status refreshed on 2026-10-11 against v036 and working prediction/experiment files. This consolidates C, D, D2, I1, and E into one ordered queue; it does not add a new release scope. Existing linear likelihood, fixed-K offset fitting, fixed-B masked drift fitting, coupled simulation, and scalar graph conversion are retained, not rewritten. All names for unimplemented functions are target names; mathematical gates may require an explicitly documented revision. Test functions listed below are the planned acceptance cases, not a claim that unforeseen failures will need no additional tests. Paths are repository-relative.
 
 ### R1-00. Numerical review follow-ups (2026-10-10)
 
@@ -829,12 +832,16 @@ Reason for insertion: reproduced numerical failures and measured duplicated matr
 
 ### R1-01. Repeated-sample and duration experiment
 
+**Initial baseline complete.** Ten seeds at each duration and summary self-checks are implemented; current results are recorded in `EXPERIMENTS.md`. Expanded benchmarks remain subject to R1-00.
+
 - Modify `experiments/experiment_linear_estimation.py`: add `_build_reference_model`, `_simulate_case`, `_fit_case`, `_summarize_runs`, `_plot_recovery`; update `main`. Preserve the original example, add 10 seeds and durations 100/300, record failed attempts and runtime, and save summary data and figures.
-- Add `tests/experiments/test_linear_estimation_summary.py`: `test_summary_counts_failures`, `test_summary_matches_hand_calculation`, `test_summary_handles_no_successes`.
+- Implemented in experiment `_check_summary`: hand-calculated statistics, failure handling, and no-success checks. No additional summary test file is required.
 - Update `docs/EXPERIMENTS.md`; generated files remain under `experiments/outputs/`.
 - Gate: explain error distributions and failures before expanding the estimator; repeated initialization agreement is not repeated-sample accuracy.
 
 ### R1-02. Optional drift mask
+
+**Interface implemented.** Omitted/None masks resolve to all-True; retain the acceptance cases below when auditing coverage.
 
 - Modify `src/dynsample/estimation/linear.py`: `fit_linear_drift` accepts omitted/None masks as all-True; explicit masks keep zeros fixed.
 - Extend `tests/estimation/test_linear_estimation.py`: `test_fit_linear_drift_optional_mask_matches_full_mask`, `test_fit_linear_drift_rejects_invalid_optional_mask`; retain existing restricted-mask tests.
@@ -842,12 +849,14 @@ Reason for insertion: reproduced numerical failures and measured duplicated matr
 
 ### R1-03. Prediction and held-out scoring
 
-- Add `src/dynsample/inference/prediction.py`: `predict_linear`, returning conditional means and marginal process covariances from one exact initial state.
-- Add `src/dynsample/metrics/prediction.py`: `prediction_metrics`, reporting declared mean-prediction RMSE/MAE.
-- Add `tests/inference/test_linear_prediction.py`: `test_predict_linear_matches_scalar_ou`, `test_predict_linear_matches_zero_drift_reference`, `test_predict_linear_preserves_initial_state`, `test_predict_linear_rejects_invalid_inputs`.
-- Add `tests/metrics/test_prediction.py`: `test_prediction_metrics_matches_hand_calculation`, `test_prediction_metrics_rejects_mismatched_inputs`.
-- Modify existing experiment `main`: chronological train/validation split, fixed-origin versus updated one-step evaluation. Reuse the conditional NLL for joint path scoring.
-- Gate: no future observations in fitting/preprocessing; do not treat marginal forecast densities as independent joint observations.
+**Initial implementation and experiment complete (2026-10-11).**
+
+- Implemented `src/dynsample/inference/prediction.py`: `predict_linear`, with analytical and input-contract tests in `tests/inference/test_linear_prediction.py`.
+- Implemented `src/dynsample/metrics/prediction.py`: `prediction_metrics`, with 17 hand-reference/input/numerical tests in `tests/metrics/test_prediction.py`.
+- Extended the existing experiment with `_split_trajectory`, `_one_step_predictions`, `_score_predictions`, `_plot_predictions`, and `_run_prediction_experiment`; fresh training-only fitting, paired persistence baselines, and conditional path NLL.
+- Artifacts: `linear_prediction.png` and fit, metrics, NLL, and values CSVs under `experiments/outputs/`.
+- Evidence: user reports full-suite success; saved experiment outputs inspected. No future target enters parameter fitting; updated one-step forecasts use only previous observations. Marginal densities are not multiplied for path scoring.
+- Open limits: R1-00 long-horizon robustness; broader holdouts/model comparisons; parameter uncertainty and coverage calibration. C and R1 are not complete.
 
 ### R1-04. Units and no-edge controls
 
