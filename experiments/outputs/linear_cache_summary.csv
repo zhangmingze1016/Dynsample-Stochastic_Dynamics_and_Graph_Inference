@@ -1,0 +1,4 @@
+schedule,nodes,observations,intervals,unique_intervals,duration,timing_repeats,memory_repeats,cached_seconds_median,uncached_seconds_median,speedup,cached_traced_peak_bytes_median,uncached_traced_peak_bytes_median,max_abs_offset_difference,absolute_nll_difference
+Regular,3,257,256,1,128.0,5,3,0.002785291988402605,0.02361712499987334,8.479227706901213,121108.0,169218.0,0.0,1.1368683772161603e-13
+Repeated irregular,3,257,256,2,128.0,5,3,0.0025926249800249934,0.02344650006853044,9.043537051897268,121722.0,169186.0,0.0,9.947598300641403e-14
+All distinct,3,257,256,256,128.0,5,3,0.014400750049389899,0.022497333004139364,1.5622334202719173,313714.0,169218.0,0.0,2.4868995751603507e-14

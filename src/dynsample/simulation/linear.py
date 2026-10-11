@@ -5,61 +5,96 @@ from dynsample.core.linear_model import LinearSDE
 from dynsample.core.state import State
 from dynsample.core.trajectory import Trajectory
 
+# Compute an exact linear transition using short-step composition.
 def linear_transition(
-        model: LinearSDE,
-        dt:float
+    model: LinearSDE,
+    dt: float,
 ) -> tuple[
     NDArray[np.float64],
     NDArray[np.float64],
     NDArray[np.float64],
-
 ]:
-    """Return (transition, offset, covariance) for a constant linear SDE."""
+    """Return transition, offset, and process covariance.
+
+    Evaluate a short-time matrix exponential, then repeatedly
+    compose the transition to reach the requested duration.
+    """
     if not np.isfinite(dt):
         raise ValueError("dt must be finite")
 
-    if dt < 0:
+    if dt < 0.0:
         raise ValueError("dt must be non-negative")
 
     n = model.n_nodes
 
-    if dt == 0:
-        return(
-            np.eye(n, dtype = np.float64),
-            np.zeros(n, dtype = np.float64),
-            np.zeros((n, n), dtype = np.float64),
+    if dt == 0.0:
+        return (
+            np.eye(n, dtype=np.float64),
+            np.zeros(n, dtype=np.float64),
+            np.zeros((n, n), dtype=np.float64),
         )
 
     drift = model.drift
     diffusion = model.diffusion
 
-    # Augment the drift to integrate the constant offset without inverting it.
+    # Choose h so that n * max(abs(K)) * h is at most one.
+    # This conservatively bounds the short-step drift norm.
+    max_drift = float(np.max(np.abs(drift)))
+    doublings = 0
 
-    mean_block = np.zeros((n + 1, n + 1), dtype = np.float64)
+    if max_drift > 0.0:
+        # Use logarithms to avoid overflowing when computing K * dt.
+        log2_bound = (
+            float(np.log2(dt))
+            + float(np.log2(max_drift))
+            + float(np.log2(n))
+        )
+
+        doublings = max(
+            0,
+            int(np.ceil(log2_bound)),
+        )
+
+    # ldexp computes dt * 2**(-doublings) without forming 2**doublings.
+    short_dt = float(np.ldexp(dt, -doublings))
+
+    if short_dt == 0.0:
+        raise FloatingPointError(
+            "short transition interval underflowed to zero"
+        )
+
+    # Integrate the affine offset without requiring an inverse of K.
+    mean_block = np.zeros(
+        (n + 1, n + 1),
+        dtype=np.float64,
+    )
     mean_block[:n, :n] = drift
     mean_block[:n, n] = model.offset
 
-
-    # Construct the Van Loan block for the integrated noise covariance.
+    # Build the Van Loan block for the short-time covariance.
     with np.errstate(over="ignore", invalid="ignore"):
         noise_rate = diffusion @ diffusion.T
 
-        covariance_block = np.zeros((2 * n, 2 * n), dtype = np.float64)
+        covariance_block = np.zeros(
+            (2 * n, 2 * n),
+            dtype=np.float64,
+        )
         covariance_block[:n, :n] = drift
         covariance_block[:n, n:] = noise_rate
         covariance_block[n:, n:] = -drift.T
 
-        scaled_mean_block = mean_block * dt
-        scaled_covariance_block = covariance_block * dt
-
+        scaled_mean_block = mean_block * short_dt
+        scaled_covariance_block = covariance_block * short_dt
 
     if (
         not np.all(np.isfinite(scaled_mean_block))
         or not np.all(np.isfinite(scaled_covariance_block))
     ):
-        raise FloatingPointError("transition blocks contain non-finite values")
+        raise FloatingPointError(
+            "transition blocks contain non-finite values"
+        )
 
-    with np.errstate(over = "ignore", invalid = "ignore"):
+    with np.errstate(over="ignore", invalid="ignore"):
         mean_exponential = expm(scaled_mean_block)
         covariance_exponential = expm(scaled_covariance_block)
 
@@ -67,17 +102,55 @@ def linear_transition(
         not np.all(np.isfinite(mean_exponential))
         or not np.all(np.isfinite(covariance_exponential))
     ):
-        raise FloatingPointError("matrix exponential contains non-finite values")
+        raise FloatingPointError(
+            "matrix exponential contains non-finite values"
+        )
 
     transition = mean_exponential[:n, :n].copy()
     offset = mean_exponential[:n, n].copy()
 
-    with np.errstate(over = "ignore", invalid = "ignore"):
-        covariance = covariance_exponential[:n, n:] @ transition.T
+    with np.errstate(over="ignore", invalid="ignore"):
+        covariance = (
+            covariance_exponential[:n, n:] @ transition.T
+        )
+
+        # Remove small asymmetry caused by floating-point arithmetic.
         covariance = 0.5 * covariance + 0.5 * covariance.T
 
     if not np.all(np.isfinite(covariance)):
-        raise FloatingPointError("transition covariance contains non-finite values")
+        raise FloatingPointError(
+            "transition covariance contains non-finite values"
+        )
+
+    # Each composition doubles the elapsed time.
+    for _ in range(doublings):
+        with np.errstate(over="ignore", invalid="ignore"):
+            next_transition = transition @ transition
+
+            next_offset = transition @ offset + offset
+
+            next_covariance = (
+                transition @ covariance @ transition.T
+                + covariance
+            )
+            next_covariance = (
+                0.5 * next_covariance
+                + 0.5 * next_covariance.T
+            )
+
+        if (
+            not np.all(np.isfinite(next_transition))
+            or not np.all(np.isfinite(next_offset))
+            or not np.all(np.isfinite(next_covariance))
+        ):
+            raise FloatingPointError(
+                "transition composition contains non-finite values"
+            )
+
+        # Update only after all three results use the old transition.
+        transition = next_transition
+        offset = next_offset
+        covariance = next_covariance
 
     return transition, offset, covariance
 

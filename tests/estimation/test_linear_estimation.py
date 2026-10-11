@@ -5,9 +5,10 @@ import pytest
 from scipy.stats import multivariate_normal
 from scipy.optimize import OptimizeResult, minimize_scalar
 import dynsample.estimation.linear as linear_estimation
+from unittest.mock import patch
 
 from dynsample.estimation.linear import fit_linear_drift
-
+import dynsample.simulation.linear as linear_simulation
 from dynsample.core.linear_model import LinearSDE
 from dynsample.core.trajectory import Trajectory
 from dynsample.estimation.linear import (
@@ -691,3 +692,231 @@ def test_fit_linear_drift_rejects_invalid_configuration(
             initial_drift=initial,
             maxiter=maxiter,
         )
+
+# Derive the scalar fixed-K,B offset MLE and NLL without matrix routines.
+def _scalar_offset_cache_reference(times, values, alpha, sigma):
+    dt = np.diff(times)
+
+    transition = np.exp(-alpha * dt)
+    integrated_transition = -np.expm1(-alpha * dt) / alpha
+    variance = (
+        sigma**2
+        * -np.expm1(-2.0 * alpha * dt)
+        / (2.0 * alpha)
+    )
+
+    response = values[1:] - transition * values[:-1]
+
+    fitted_offset = (
+        np.sum(integrated_transition * response / variance)
+        / np.sum(integrated_transition**2 / variance)
+    )
+
+    residual = response - integrated_transition * fitted_offset
+
+    score = 0.5 * np.sum(
+        np.log(2.0 * np.pi)
+        + np.log(variance)
+        + residual**2 / variance
+    )
+
+    return float(fitted_offset), float(score)
+
+
+# Repeated and distinct intervals must preserve the mathematical solution.
+@pytest.mark.parametrize(
+    "times",
+    [
+        np.array([0.0, 0.5, 1.0, 1.5, 2.0]),
+        np.array([0.0, 0.25, 0.75, 1.0, 1.5]),
+        np.array([0.0, 0.125, 0.375, 0.875, 1.875]),
+    ],
+    ids=["regular", "repeated-irregular", "all-distinct"],
+)
+def test_fit_linear_offset_cache_matches_scalar_reference(times):
+    values = np.array([1.2, 0.7, 1.0, 0.4, 0.8])
+    alpha = 0.7
+    sigma = 0.6
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, None, None],
+    )
+
+    expected_offset, expected_score = _scalar_offset_cache_reference(
+        times, values, alpha, sigma
+    )
+
+    result = fit_linear_offset(
+        trajectory=trajectory,
+        drift=np.array([[-alpha]]),
+        diffusion=np.array([[sigma]]),
+    )
+
+    assert result.success
+    np.testing.assert_allclose(
+        result.offset,
+        [expected_offset],
+        rtol=1e-11,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        result.fun,
+        expected_score,
+        rtol=1e-11,
+        atol=1e-12,
+    )
+
+
+# Count expensive operations and verify exact, rather than rounded, cache keys.
+@pytest.mark.parametrize(
+    "times, expected_unique",
+    [
+        (
+            np.array([0.0, 0.5, 1.0, 1.5, 2.0]),
+            1,
+        ),
+        (
+            np.array([0.0, 0.25, 0.75, 1.0, 1.5]),
+            2,
+        ),
+        (
+            np.array([0.0, 1.0, np.nextafter(2.0, np.inf)]),
+            2,
+        ),
+    ],
+    ids=["one-interval", "two-intervals", "nearby-distinct-intervals"],
+)
+def test_fit_linear_offset_cache_reuses_factorizations(
+    times, expected_unique
+):
+    all_values = np.array([
+        [1.2, -0.3],
+        [0.7, 0.2],
+        [1.0, 0.1],
+        [0.4, -0.2],
+        [0.8, 0.3],
+    ])
+
+    trajectory = Trajectory(
+        times=times,
+        values=all_values[:times.size, :, None],
+    )
+    drift = np.array([
+        [-0.7, 0.0],
+        [0.2, -1.0],
+    ])
+    diffusion = np.array([
+        [0.6, 0.0],
+        [0.2, 0.5],
+    ])
+
+    assert np.unique(np.diff(times)).size == expected_unique
+
+    with (
+        patch.object(
+            linear_simulation,
+            "expm",
+            wraps=linear_simulation.expm,
+        ) as transition_expm,
+        patch.object(
+            linear_estimation,
+            "expm",
+            wraps=linear_estimation.expm,
+        ) as integral_expm,
+        patch.object(
+            np.linalg,
+            "cholesky",
+            wraps=np.linalg.cholesky,
+        ) as cholesky,
+    ):
+        result = fit_linear_offset(
+            trajectory=trajectory,
+            drift=drift,
+            diffusion=diffusion,
+        )
+
+        # Two exponentials inside linear_transition per unique interval.
+        assert transition_expm.call_count == 2 * expected_unique
+
+        # One offset-integral exponential per unique interval.
+        assert integral_expm.call_count == expected_unique
+
+        # One covariance factorization per unique interval.
+        assert cholesky.call_count == expected_unique
+
+    # Run the separate NLL implementation after operation counting ends.
+    expected_score = linear_negative_log_likelihood(
+        trajectory=trajectory,
+        model=result.model,
+    )
+
+    np.testing.assert_allclose(
+        result.fun,
+        expected_score,
+        rtol=1e-11,
+        atol=1e-11,
+    )
+
+
+# Every fit must rebuild factors when K or B changes between calls.
+@pytest.mark.parametrize(
+    "second_alpha, second_sigma",
+    [
+        (1.4, 0.6),
+        (0.7, 1.2),
+    ],
+    ids=["changed-drift", "changed-diffusion"],
+)
+def test_fit_linear_offset_cache_is_local_to_each_call(
+    second_alpha, second_sigma
+):
+    times = np.array([0.0, 0.5, 1.0, 1.5, 2.0])
+    values = np.array([1.2, 0.7, 1.0, 0.4, 0.8])
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, None, None],
+    )
+
+    with patch.object(
+        np.linalg,
+        "cholesky",
+        wraps=np.linalg.cholesky,
+    ) as cholesky:
+        fit_linear_offset(
+            trajectory=trajectory,
+            drift=np.array([[-0.7]]),
+            diffusion=np.array([[0.6]]),
+        )
+
+        first_call_count = cholesky.call_count
+
+        result = fit_linear_offset(
+            trajectory=trajectory,
+            drift=np.array([[-second_alpha]]),
+            diffusion=np.array([[second_sigma]]),
+        )
+
+        assert first_call_count == 1
+        assert cholesky.call_count == 2
+
+    expected_offset, expected_score = _scalar_offset_cache_reference(
+        times,
+        values,
+        second_alpha,
+        second_sigma,
+    )
+
+    np.testing.assert_allclose(
+        result.offset,
+        [expected_offset],
+        rtol=1e-11,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        result.fun,
+        expected_score,
+        rtol=1e-11,
+        atol=1e-12,
+    )

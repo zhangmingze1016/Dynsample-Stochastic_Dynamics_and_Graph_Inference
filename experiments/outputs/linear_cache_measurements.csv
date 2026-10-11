@@ -1,0 +1,49 @@
+schedule,measurement,repeat,method,seconds,traced_peak_bytes
+Regular,time,1,Uncached,0.025241709081456065,
+Regular,time,1,Cached,0.0029064579866826534,
+Regular,time,2,Cached,0.0027893329970538616,
+Regular,time,2,Uncached,0.023553333012387156,
+Regular,time,3,Uncached,0.024427458993159235,
+Regular,time,3,Cached,0.00277895899489522,
+Regular,time,4,Cached,0.002601250074803829,
+Regular,time,4,Uncached,0.023259124951437116,
+Regular,time,5,Uncached,0.02361712499987334,
+Regular,time,5,Cached,0.002785291988402605,
+Regular,memory,1,Cached,,121200
+Regular,memory,1,Uncached,,169172
+Regular,memory,2,Uncached,,169264
+Regular,memory,2,Cached,,121016
+Regular,memory,3,Cached,,121108
+Regular,memory,3,Uncached,,169218
+Repeated irregular,time,1,Uncached,0.022979207918979228,
+Repeated irregular,time,1,Cached,0.0025926249800249934,
+Repeated irregular,time,2,Cached,0.0026118329260498285,
+Repeated irregular,time,2,Uncached,0.023736625094898045,
+Repeated irregular,time,3,Uncached,0.023172459099441767,
+Repeated irregular,time,3,Cached,0.0025678749661892653,
+Repeated irregular,time,4,Cached,0.0025640000822022557,
+Repeated irregular,time,4,Uncached,0.02344650006853044,
+Repeated irregular,time,5,Uncached,0.02441775007173419,
+Repeated irregular,time,5,Cached,0.0026250829687342048,
+Repeated irregular,memory,1,Cached,,121722
+Repeated irregular,memory,1,Uncached,,169186
+Repeated irregular,memory,2,Uncached,,169232
+Repeated irregular,memory,2,Cached,,121722
+Repeated irregular,memory,3,Cached,,121722
+Repeated irregular,memory,3,Uncached,,169186
+All distinct,time,1,Uncached,0.022636999958194792,
+All distinct,time,1,Cached,0.014552790904417634,
+All distinct,time,2,Cached,0.014362749992869794,
+All distinct,time,2,Uncached,0.02247387496754527,
+All distinct,time,3,Uncached,0.022287625004537404,
+All distinct,time,3,Cached,0.014400750049389899,
+All distinct,time,4,Cached,0.014345709001645446,
+All distinct,time,4,Uncached,0.023172999965026975,
+All distinct,time,5,Uncached,0.022497333004139364,
+All distinct,time,5,Cached,0.014401375083252788,
+All distinct,memory,1,Cached,,313714
+All distinct,memory,1,Uncached,,169218
+All distinct,memory,2,Uncached,,169218
+All distinct,memory,2,Cached,,313714
+All distinct,memory,3,Cached,,313852
+All distinct,memory,3,Uncached,,169218

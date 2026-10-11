@@ -87,17 +87,17 @@ def linear_negative_log_likelihood(
 
     return float(total)
 
-# Estimate the constant offset by weighted least squares with fixed K and B.
+# Fit the constant offset while reusing factors within this fixed-K,B call.
 def fit_linear_offset(
     trajectory: Trajectory,
     drift: NDArray[np.float64],
     diffusion: NDArray[np.float64],
 ) -> OptimizeResult:
-    """Fit b conditional on the initial state, with K and B fixed."""
+    """Fit b with fixed K and B using cached weighted least squares."""
 
     n = trajectory.n_nodes
 
-    # Validate the supplied coefficients using the existing model class.
+    # Validate model coefficients using the existing model class.
     model = LinearSDE(
         drift=drift,
         offset=np.zeros(n, dtype=np.float64),
@@ -121,42 +121,99 @@ def fit_linear_offset(
     if not np.all(np.isfinite(intervals)):
         raise ValueError("time intervals must be finite")
 
-    if np.any(intervals <= 0):
+    if np.any(intervals <= 0.0):
         raise ValueError("time must be strictly increasing")
 
     values = trajectory.values[:, :, 0]
 
-    # The upper-right block of its exponential gives the integral of exp(Ku).
-    integral_block = np.zeros((2 * n, 2 * n), dtype=np.float64)
+    # Its upper-right exponential block is G(dt) = integral exp(Ku) du.
+    integral_block = np.zeros(
+        (2 * n, 2 * n),
+        dtype=np.float64,
+    )
     integral_block[:n, :n] = model.drift
     integral_block[:n, n:] = np.eye(n, dtype=np.float64)
 
+    # This cache exists only inside the current fixed-K,B evaluation.
+    factor_cache = {}
+
     design_blocks = []
     response_blocks = []
+    log_determinants = []
 
     for i, dt in enumerate(intervals, start=1):
-        transition, _, covariance = linear_transition(
-            model=model,
-            dt=float(dt),
-        )
+        interval = float(dt)
 
-        with np.errstate(over="ignore", invalid="ignore"):
-            scaled_block = integral_block * dt
-
-        if not np.all(np.isfinite(scaled_block)):
-            raise FloatingPointError(
-                f"non-finite offset integration block at transition {i}"
+        # Reuse only exactly equal floating-point intervals.
+        if interval not in factor_cache:
+            transition, _, covariance = linear_transition(
+                model=model,
+                dt=interval,
             )
 
-        with np.errstate(over="ignore", invalid="ignore"):
-            block_exponential = expm(scaled_block)
+            with np.errstate(over="ignore", invalid="ignore"):
+                scaled_block = integral_block * interval
 
-        if not np.all(np.isfinite(block_exponential)):
-            raise FloatingPointError(
-                f"non-finite offset integral at transition {i}"
+            if not np.all(np.isfinite(scaled_block)):
+                raise FloatingPointError(
+                    f"non-finite offset integration block at transition {i}"
+                )
+
+            with np.errstate(over="ignore", invalid="ignore"):
+                block_exponential = expm(scaled_block)
+
+            if not np.all(np.isfinite(block_exponential)):
+                raise FloatingPointError(
+                    f"non-finite offset integral at transition {i}"
+                )
+
+            integrated_transition = block_exponential[:n, n:]
+
+            try:
+                lower = np.linalg.cholesky(covariance)
+            except np.linalg.LinAlgError as exc:
+                raise ValueError(
+                    f"transition {i} requires a positive-definite covariance"
+                ) from exc
+
+            # Cache L^{-1}G directly; the fit needs this whitened matrix.
+            whitened_design = solve_triangular(
+                lower,
+                integrated_transition,
+                lower=True,
             )
 
-        integrated_transition = block_exponential[:n, n:]
+            with np.errstate(
+                over="ignore",
+                invalid="ignore",
+                divide="ignore",
+            ):
+                log_determinant = float(
+                    2.0 * np.sum(np.log(np.diag(lower)))
+                )
+
+            if (
+                not np.all(np.isfinite(whitened_design))
+                or not np.isfinite(log_determinant)
+            ):
+                raise FloatingPointError(
+                    f"non-finite transition factors at transition {i}"
+                )
+
+            factor_cache[interval] = (
+                transition,
+                lower,
+                whitened_design,
+                log_determinant,
+            )
+
+        # Retrieve factors for this interval without recomputing them.
+        (
+            transition,
+            lower,
+            whitened_design,
+            log_determinant,
+        ) = factor_cache[interval]
 
         with np.errstate(over="ignore", invalid="ignore"):
             response = values[i] - transition @ values[i - 1]
@@ -166,35 +223,23 @@ def fit_linear_offset(
                 f"non-finite response at transition {i}"
             )
 
-        try:
-            lower = np.linalg.cholesky(covariance)
-        except np.linalg.LinAlgError as exc:
-            raise ValueError(
-                f"transition {i} requires a positive-definite covariance"
-            ) from exc
-
-        # Whiten the equation so ordinary least squares has the correct weights.
-        whitened_design = solve_triangular(
-            lower,
-            integrated_transition,
-            lower=True,
-        )
+        # The response depends on the observations, so compute it every time.
         whitened_response = solve_triangular(
             lower,
             response,
             lower=True,
         )
 
-        if (
-            not np.all(np.isfinite(whitened_design))
-            or not np.all(np.isfinite(whitened_response))
-        ):
+        if not np.all(np.isfinite(whitened_response)):
             raise FloatingPointError(
                 f"non-finite whitened equation at transition {i}"
             )
 
         design_blocks.append(whitened_design)
         response_blocks.append(whitened_response)
+
+        # Repeated intervals still contribute once per observed transition.
+        log_determinants.append(log_determinant)
 
     design = np.vstack(design_blocks)
     response = np.concatenate(response_blocks)
@@ -214,22 +259,40 @@ def fit_linear_offset(
     if not np.all(np.isfinite(offset)):
         raise FloatingPointError("estimated offset must be finite")
 
+    # Reuse the whitened equations to score the fitted offset.
+    # No second transition calculation or Cholesky decomposition is needed.
+    with np.errstate(over="ignore", invalid="ignore"):
+        standardized_residuals = response - design @ offset
+
+        quadratic = float(
+            standardized_residuals @ standardized_residuals
+        )
+
+        score = 0.5 * (
+            intervals.size * n * np.log(2.0 * np.pi)
+            + float(np.sum(log_determinants))
+            + quadratic
+        )
+
+    if (
+        not np.all(np.isfinite(standardized_residuals))
+        or not np.isfinite(score)
+    ):
+        raise FloatingPointError(
+            "non-finite likelihood at fitted offset"
+        )
+
     fitted_model = LinearSDE(
         drift=model.drift,
         offset=offset,
         diffusion=model.diffusion,
     )
 
-    score = linear_negative_log_likelihood(
-        trajectory=trajectory,
-        model=fitted_model,
-    )
-
     return OptimizeResult(
         x=offset.copy(),
         offset=offset.copy(),
         model=fitted_model,
-        fun=score,
+        fun=float(score),
         success=True,
         message="Unique weighted least-squares offset solution found.",
         rank=int(rank),

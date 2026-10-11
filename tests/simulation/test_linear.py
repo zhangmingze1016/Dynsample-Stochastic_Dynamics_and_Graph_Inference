@@ -493,4 +493,183 @@ def test_simulate_linear_rejects_incompatible_initial_state(values):
             rng=np.random.default_rng(42),
         )
 
-        
+# A stable scalar process must remain finite over a long horizon.
+def test_linear_transition_long_horizon_scalar_reference():
+    model = LinearSDE(
+        drift=np.array([[-1.0]]),
+        offset=np.array([2.0]),
+        diffusion=np.array([[1.0]]),
+    )
+
+    transition, offset, covariance = linear_transition(
+        model=model,
+        dt=1000.0,
+    )
+
+    np.testing.assert_allclose(
+        transition, [[0.0]], rtol=0.0, atol=1e-14
+    )
+    np.testing.assert_allclose(
+        offset, [2.0], rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        covariance, [[0.5]], rtol=1e-12, atol=1e-12
+    )
+
+
+# Widely separated decay rates and correlated noise have closed-form moments.
+def test_linear_transition_long_horizon_stiff_reference():
+    rates = np.array([0.01, 100.0])
+    drift = -np.diag(rates)
+    offset_vector = np.array([0.02, -200.0])
+    diffusion = np.array([
+        [0.3, 0.0],
+        [0.2, 0.4],
+    ])
+    dt = 1000.0
+
+    model = LinearSDE(
+        drift=drift,
+        offset=offset_vector,
+        diffusion=diffusion,
+    )
+
+    transition, offset, covariance = linear_transition(model, dt)
+
+    expected_transition = np.diag(np.exp(-rates * dt))
+    expected_offset = (
+        offset_vector * (-np.expm1(-rates * dt)) / rates
+    )
+
+    noise_rate = diffusion @ diffusion.T
+    rate_sums = rates[:, None] + rates[None, :]
+    expected_covariance = (
+        noise_rate
+        * (-np.expm1(-rate_sums * dt))
+        / rate_sums
+    )
+
+    np.testing.assert_allclose(
+        transition, expected_transition, rtol=1e-8, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        offset, expected_offset, rtol=1e-8, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        covariance, expected_covariance, rtol=1e-8, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        covariance, covariance.T, rtol=0.0, atol=1e-12
+    )
+    assert np.min(np.linalg.eigvalsh(covariance)) >= -1e-12
+
+
+# A singular drift with coupling must retain its polynomial transition.
+def test_linear_transition_long_horizon_singular_reference():
+    model = LinearSDE(
+        drift=np.array([
+            [0.0, 1.0],
+            [0.0, 0.0],
+        ]),
+        offset=np.array([0.0, 2.0]),
+        diffusion=np.array([
+            [0.0],
+            [1.0],
+        ]),
+    )
+    dt = 1000.0
+
+    transition, offset, covariance = linear_transition(model, dt)
+
+    expected_transition = np.array([
+        [1.0, dt],
+        [0.0, 1.0],
+    ])
+    expected_offset = np.array([dt**2, 2.0 * dt])
+    expected_covariance = np.array([
+        [dt**3 / 3.0, dt**2 / 2.0],
+        [dt**2 / 2.0, dt],
+    ])
+
+    np.testing.assert_allclose(
+        transition, expected_transition, rtol=1e-10, atol=1e-10
+    )
+    np.testing.assert_allclose(
+        offset, expected_offset, rtol=1e-10, atol=1e-10
+    )
+    np.testing.assert_allclose(
+        covariance, expected_covariance, rtol=1e-10, atol=1e-10
+    )
+
+
+# Different partitions of a long horizon must yield matching moments.
+def test_linear_transition_long_horizon_composition():
+    model = LinearSDE(
+        drift=np.array([
+            [-0.01, 0.0],
+            [0.4, -1.0],
+        ]),
+        offset=np.array([0.02, -0.3]),
+        diffusion=np.array([
+            [0.2, 0.0],
+            [0.1, 0.3],
+        ]),
+    )
+
+    first_f, first_c, first_q = linear_transition(model, 350.0)
+    second_f, second_c, second_q = linear_transition(model, 650.0)
+    full_f, full_c, full_q = linear_transition(model, 1000.0)
+
+    expected_f = second_f @ first_f
+    expected_c = second_f @ first_c + second_c
+    expected_q = second_f @ first_q @ second_f.T + second_q
+
+    np.testing.assert_allclose(
+        full_f, expected_f, rtol=1e-8, atol=1e-11
+    )
+    np.testing.assert_allclose(
+        full_c, expected_c, rtol=1e-8, atol=1e-11
+    )
+    np.testing.assert_allclose(
+        full_q, expected_q, rtol=1e-8, atol=1e-11
+    )
+
+
+# Unstable dynamics are allowed when the finite-time result is representable.
+def test_linear_transition_long_horizon_unstable_finite():
+    model = LinearSDE(
+        drift=np.array([[0.01]]),
+        offset=np.array([0.2]),
+        diffusion=np.array([[0.3]]),
+    )
+    dt = 1000.0
+
+    transition, offset, covariance = linear_transition(model, dt)
+
+    expected_transition = np.exp(0.01 * dt)
+    expected_offset = 0.2 * np.expm1(0.01 * dt) / 0.01
+    expected_covariance = (
+        0.3**2 * np.expm1(2.0 * 0.01 * dt) / (2.0 * 0.01)
+    )
+
+    np.testing.assert_allclose(
+        transition, [[expected_transition]], rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        offset, [expected_offset], rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        covariance, [[expected_covariance]], rtol=1e-10
+    )
+
+
+# Truly unrepresentable results must raise instead of returning inf or nan.
+def test_linear_transition_long_horizon_unstable_overflow():
+    model = LinearSDE(
+        drift=np.array([[1.0]]),
+        offset=np.array([0.0]),
+        diffusion=np.array([[1.0]]),
+    )
+
+    with pytest.raises(FloatingPointError, match="non-finite"):
+        linear_transition(model=model, dt=1000.0)

@@ -323,6 +323,44 @@ The shaded fixed-origin band is the per-node mean plus/minus 1.96 marginal proce
 
 **Scope:** one correctly specified synthetic trajectory with complete exact observations, supplied structure, and fixed B. Beating persistence here does not establish general predictive superiority, uncertainty calibration, or that the cross-node coupling supplies the gain; an independent-node model comparison remains planned. Long-horizon/stiff numerical robustness remains subject to R1-00. Setting `RUN_RECOVERY=False` skips the 20 recovery fits but retains the reference and prediction experiments; existing recovery artifacts are not regenerated in that mode.
 
+## 7. Linear transition robustness and offset-cache benchmark
+
+**Evidence (2026-10-11):** working changes on top of v037 (`28cf15a`). The user ran the benchmark; its saved summary and measurements are the performance evidence below. A subsequent assistant verification ran `.venv/bin/python -m pytest -q`: **382 passed in 8.42 s**. The benchmark was not rerun during this documentation update.
+
+### Long-horizon transition regression
+
+`linear_transition` now computes a short-time transition and repeatedly doubles its duration using F_new=F F, c_new=F c+c, and Q_new=F Q F^T+Q. The short interval is selected using a conservative drift-size bound and logarithms to avoid forming an overflowing K*dt product. This preserves the public interface, does not require an invertible drift, and does not add covariance jitter.
+
+Six added regression cases cover scalar OU at dt=1000, widely separated decay rates with correlated noise, singular coupled drift, partition composition, representable unstable dynamics, and genuinely unrepresentable results. For K=-1, b=2, B=1, dt=1000, the reference is F approximately zero, c approximately 2, Q approximately 0.5. This addresses the former large intermediate Van Loan exponential; it is not a guarantee against every extreme-coefficient or ill-conditioning failure.
+
+### Fixed-K,B offset fitting
+
+Run from the repository root:
+
+```bash
+python -m experiments.experiment_linear_cache
+```
+
+`fit_linear_offset` now caches F, the covariance Cholesky factor, the whitened offset integration matrix, and log determinant by exactly equal floating-point dt within one call. The fitted likelihood reuses the stacked whitened equations instead of recalculating transitions. New K/B candidates receive new caches. No interval rounding is used. Eight added cache cases check independent scalar estimates/scores, multivariate NLL agreement, operation counts, nearby-but-distinct intervals, and changed-parameter isolation.
+
+**Design:** three nodes, 256 intervals, 257 observations, duration 128 in every schedule. Regular intervals have one unique dt; alternating 0.25/0.75 intervals have two; a shuffled binary-exact schedule has 256. Both implementations receive identical observations within a case. Data generation and garbage collection are outside timing; both paths are warmed up and measurement order alternates. Report the median of five timing runs and three separate memory runs. The uncached experimental reference repeats the former transition/factorization and likelihood workflow, using the current `linear_transition` in both paths. It is not a second public estimator.
+
+| Schedule | Unique dt | Cached median (ms) | Uncached median (ms) | Speedup | Cached traced peak (KiB) | Uncached traced peak (KiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Regular | 1 | 2.785 | 23.617 | 8.48x | 118.27 | 165.25 |
+| Repeated irregular | 2 | 2.593 | 23.447 | 9.04x | 118.87 | 165.22 |
+| All distinct | 256 | 14.401 | 22.497 | 1.56x | 306.36 | 165.25 |
+
+All three maximum absolute offset differences were zero in this run. Absolute NLL differences were 1.137e-13, 9.948e-14, and 2.487e-14 respectively; equivalence checks also run on timed and memory-measured results. For four exactly equal intervals, instrumentation verifies three total matrix exponentials and one Cholesky factorization in the cached fit, versus the previous 20 exponentials and eight factorizations.
+
+![Offset fitting runtime and traced allocation comparison](../experiments/outputs/linear_cache.png)
+
+**Interpretation:** repeated intervals benefit from factor reuse; distinct intervals still benefit from avoiding the second likelihood computation. With all intervals distinct, retaining every factor increases traced peak allocation from approximately 165 to 306 KiB. This small benchmark supports the current implementation, not an unconditional speedup or bounded-memory claim. Cache storage grows with the number of unique intervals and matrix dimension. No additional eviction or approximate-key policy is introduced on this evidence alone.
+
+**Measurement limits:** tracemalloc reports tracked allocation peaks, not total process RSS or all native-library workspace. Runtime depends on machine, library versions, threading and load; the run does not establish end-to-end drift-optimization speedup, large-node scaling, or the speed effect of the long-horizon fix. Exact binary schedules deliberately expose cache reuse; nominally equal decimal intervals obtained from timestamp subtraction may produce more unique keys. No minimum speedup is asserted in unit tests.
+
+**Artifacts:** [benchmark script](../experiments/experiment_linear_cache.py), [summary](../experiments/outputs/linear_cache_summary.csv), [individual measurements](../experiments/outputs/linear_cache_measurements.csv), and [figure](../experiments/outputs/linear_cache.png).
+
 ## Updating this record
 
 When adding a result, record the source revision, environment, command, data-generating setup, seed, reference, key measurements, and limitations. Update representative figures when the underlying experiment changes. Keep raw debugging output out of the narrative. Future graph experiments should measure false and missed edges and stability; future change experiments should also measure false alarms and detection delay. Do not infer those capabilities from the simulation results above.
