@@ -23,7 +23,7 @@ PARAMETER_NAMES = ("k11", "k21", "k22", "b1", "b2")
 
 # Keep the existing repeated-sample experiment enabled.
 RUN_RECOVERY = True
-
+RUN_NO_EDGE = True
 
 # Define the same generating model for every experiment.
 def _build_reference_model():
@@ -908,7 +908,270 @@ def _run_prediction_experiment(trajectory, model, mask, output_dir):
     )
 
 
-# Run estimation, prediction evaluation, and optional recovery experiments.
+# Summarize unrestricted estimates of coefficients whose true values are zero.
+def _summarize_no_edge_runs(records):
+    summaries = []
+
+    for duration in sorted({row["duration"] for row in records}):
+        rows = [
+            row for row in records
+            if row["duration"] == duration
+        ]
+        successful = [
+            row for row in rows
+            if row["success"]
+        ]
+
+        for coefficient, direction in [
+            ("k12", "Node 2 -> Node 1"),
+            ("k21", "Node 1 -> Node 2"),
+        ]:
+            summary = {
+                "duration": duration,
+                "coefficient": coefficient,
+                "direction": direction,
+                "true_value": 0.0,
+                "attempted": len(rows),
+                "successful": len(successful),
+                "failed": len(rows) - len(successful),
+                "mean": np.nan,
+                "rmse": np.nan,
+                "mean_absolute": np.nan,
+                "max_absolute": np.nan,
+            }
+
+            if successful:
+                estimates = np.array([
+                    row[coefficient] for row in successful
+                ])
+
+                # The true value is zero, so each estimate is also its error.
+                summary["mean"] = float(np.mean(estimates))
+                summary["rmse"] = float(
+                    np.sqrt(np.mean(estimates**2))
+                )
+                summary["mean_absolute"] = float(
+                    np.mean(np.abs(estimates))
+                )
+                summary["max_absolute"] = float(
+                    np.max(np.abs(estimates))
+                )
+
+            summaries.append(summary)
+
+    return summaries
+
+
+# Show off-diagonal estimates and retain visible failure counts.
+def _plot_no_edge_runs(records, output_path):
+    durations = sorted({
+        row["duration"] for row in records
+    })
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(14, 4.5),
+        constrained_layout=True,
+    )
+    fig.suptitle(
+        "Independent-node control: unrestricted drift fitting\n"
+        "True cross-node coefficients are zero; no edge selection is applied"
+    )
+
+    for ax, coefficient, direction in [
+        (axes[0], "k12", "Node 2 -> Node 1"),
+        (axes[1], "k21", "Node 1 -> Node 2"),
+    ]:
+        ax.axhline(
+            0.0,
+            color="black",
+            linestyle="--",
+            label="True coefficient",
+        )
+
+        for position, duration in enumerate(durations):
+            successful = [
+                row for row in records
+                if row["duration"] == duration and row["success"]
+            ]
+
+            if successful:
+                jitter = np.linspace(
+                    -0.12, 0.12, len(successful)
+                )
+
+                ax.scatter(
+                    position + jitter,
+                    [row[coefficient] for row in successful],
+                    alpha=0.8,
+                )
+
+        ax.set_xticks(
+            range(len(durations)),
+            [f"{duration:.0f}" for duration in durations],
+        )
+        ax.set(
+            title=f"{coefficient}: {direction}",
+            xlabel="Observation duration",
+            ylabel="Estimated drift coefficient",
+        )
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8)
+
+    successful_counts = []
+    failed_counts = []
+
+    for duration in durations:
+        rows = [
+            row for row in records
+            if row["duration"] == duration
+        ]
+        count = sum(row["success"] for row in rows)
+
+        successful_counts.append(count)
+        failed_counts.append(len(rows) - count)
+
+    positions = np.arange(len(durations))
+
+    axes[2].bar(
+        positions,
+        successful_counts,
+        label="Successful",
+    )
+    axes[2].bar(
+        positions,
+        failed_counts,
+        bottom=successful_counts,
+        color="tab:red",
+        label="Failed",
+    )
+    axes[2].set_xticks(
+        positions,
+        [f"{duration:.0f}" for duration in durations],
+    )
+    axes[2].set(
+        title="All fitting attempts",
+        xlabel="Observation duration",
+        ylabel="Count",
+    )
+    axes[2].legend()
+
+    fig.savefig(output_path, dpi=180)
+
+
+# Fit a dense drift matrix to data generated without cross-node coupling.
+def _run_no_edge_experiment(output_dir):
+    model = LinearSDE(
+        drift=np.array([
+            [-0.7, 0.0],
+            [0.0, -1.0],
+        ]),
+        offset=np.array([0.4, -0.2]),
+        diffusion=np.array([
+            [0.6, 0.0],
+            [0.0, 0.5],
+        ]),
+    )
+
+    initial_state = State(
+        time=0.0,
+        values=np.array([[2.0], [-1.0]]),
+    )
+
+    records = []
+    runs_path = output_dir / "linear_no_edge_runs.csv"
+
+    print("\nINDEPENDENT-NODE CONTROL", flush=True)
+    print("Generating K and B are diagonal.")
+    print("Fitting allows every drift coefficient: mask=None.")
+    print("Diffusion B is supplied and fixed.")
+    print("No threshold or sparse edge selection is applied.")
+
+    for pair_count in (100, 300):
+        intervals = np.tile([0.3, 0.7], pair_count)
+
+        for seed in range(10):
+            trajectory = _simulate_case(
+                model=model,
+                initial_state=initial_state,
+                intervals=intervals,
+                seed=seed,
+            )
+
+            record, result = _fit_case(
+                trajectory=trajectory,
+                model=model,
+                mask=None,
+                seed=seed,
+                case="Independent nodes, unrestricted fit",
+            )
+
+            # The original reference records k21 but not k12.
+            # Add the other direction for this unrestricted experiment.
+            record["k12"] = (
+                float(result.drift[0, 1])
+                if result is not None
+                else np.nan
+            )
+
+            records.append(record)
+
+            # Preserve every completed attempt, including failed fits.
+            _write_csv(runs_path, records)
+
+    summaries = _summarize_no_edge_runs(records)
+
+    print("\nNO-EDGE SUMMARY")
+    print("Coefficient statistics use successful fits only.")
+    print(
+        f"{'Duration':>10}"
+        f"{'Term':>8}"
+        f"{'Success':>10}"
+        f"{'Failed':>9}"
+        f"{'Mean':>12}"
+        f"{'RMSE':>12}"
+        f"{'Mean abs':>12}"
+        f"{'Max abs':>12}"
+    )
+
+    for row in summaries:
+        print(
+            f"{row['duration']:>10.0f}"
+            f"{row['coefficient']:>8}"
+            f"{row['successful']:>10}"
+            f"{row['failed']:>9}"
+            f"{row['mean']:>12.6f}"
+            f"{row['rmse']:>12.6f}"
+            f"{row['mean_absolute']:>12.6f}"
+            f"{row['max_absolute']:>12.6f}"
+        )
+
+    _write_csv(
+        output_dir / "linear_no_edge_summary.csv",
+        summaries,
+    )
+    _plot_no_edge_runs(
+        records,
+        output_dir / "linear_no_edge.png",
+    )
+
+    print(
+        "\nNonzero estimates are not automatically detected edges. "
+        "This experiment measures coefficient error under a no-edge model."
+    )
+    print(
+        "Ten seeds provide an initial control, not a calibrated "
+        "threshold or a false-positive rate."
+    )
+    print(
+        "Paired seeds at the two durations extend the same simulated paths; "
+        "the duration comparisons are dependent."
+    )
+
+
+
+# Run estimation, prediction, recovery, and the independent-node control.
 def main() -> None:
     _check_summary()
     print(
@@ -933,10 +1196,14 @@ def main() -> None:
     if RUN_RECOVERY:
         _run_recovery(model, initial_state, mask, output_dir)
 
+    if RUN_NO_EDGE:
+        _run_no_edge_experiment(output_dir)
+
     print(f"\nOutputs saved under: {output_dir}")
     print(
-        "This experiment uses a supplied connection mask and fixed diffusion; "
-        "it does not discover unknown connections."
+        "Diffusion is supplied and fixed. The reference fit uses a mask; "
+        "the no-edge control fits an unrestricted drift matrix. "
+        "Neither experiment performs sparse edge selection."
     )
     print(
         "Ten recovery seeds provide an initial diagnostic, "

@@ -6,7 +6,7 @@ from scipy.stats import multivariate_normal
 from scipy.optimize import OptimizeResult, minimize_scalar
 import dynsample.estimation.linear as linear_estimation
 from unittest.mock import patch
-
+from dynsample.core.state import State
 from dynsample.estimation.linear import fit_linear_drift
 import dynsample.simulation.linear as linear_simulation
 from dynsample.core.linear_model import LinearSDE
@@ -919,4 +919,302 @@ def test_fit_linear_offset_cache_is_local_to_each_call(
         expected_score,
         rtol=1e-11,
         atol=1e-12,
+    )
+
+# Small positive variances must retain their actual Gaussian density.
+@pytest.mark.parametrize("epsilon", [1e-3, 1e-6])
+def test_linear_nll_near_singular_diagonal_reference(epsilon):
+    times = np.array([0.0, 0.25, 1.0])
+    intervals = np.diff(times)
+
+    scales = np.array([1.0, epsilon])
+
+    # These are prescribed standardized increments, not random draws.
+    standardized_increments = np.array([
+        [0.5, -1.2],
+        [-0.8, 0.3],
+    ])
+
+    increments = (
+        np.sqrt(intervals)[:, None]
+        * scales[None, :]
+        * standardized_increments
+    )
+
+    values = np.vstack((
+        np.zeros((1, 2)),
+        np.cumsum(increments, axis=0),
+    ))
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, :, None],
+    )
+    model = LinearSDE(
+        drift=np.zeros((2, 2)),
+        offset=np.zeros(2),
+        diffusion=np.diag(scales),
+    )
+
+    # Independent scalar-normal formulas for the two coordinates.
+    variances = intervals[:, None] * scales[None, :]**2
+
+    expected = 0.5 * np.sum(
+        np.log(2.0 * np.pi)
+        + np.log(variances)
+        + standardized_increments**2
+    )
+
+    actual = linear_negative_log_likelihood(
+        trajectory=trajectory,
+        model=model,
+    )
+
+    assert np.isfinite(actual)
+    np.testing.assert_allclose(
+        actual,
+        expected,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+
+
+# Offset fitting must preserve accuracy across very different noise scales.
+@pytest.mark.parametrize("epsilon", [1e-3, 1e-6])
+def test_fit_linear_offset_near_singular_diagonal_reference(epsilon):
+    times = np.array([0.0, 0.25, 0.75, 1.0])
+    intervals = np.diff(times)
+    scales = np.array([1.0, epsilon])
+
+    base_values = np.array([
+        [0.0, 0.0],
+        [0.2, -0.3],
+        [-0.1, 0.4],
+        [0.6, 0.2],
+    ])
+    values = base_values * scales[None, :]
+
+    trajectory = Trajectory(
+        times=times,
+        values=values[:, :, None],
+    )
+
+    result = fit_linear_offset(
+        trajectory=trajectory,
+        drift=np.zeros((2, 2)),
+        diffusion=np.diag(scales),
+    )
+
+    # With K=0 and constant known B, b_hat is displacement / duration.
+    duration = times[-1] - times[0]
+    expected_offset = (values[-1] - values[0]) / duration
+
+    residuals = (
+        np.diff(values, axis=0)
+        - intervals[:, None] * expected_offset[None, :]
+    )
+    standard_deviations = (
+        np.sqrt(intervals)[:, None] * scales[None, :]
+    )
+    standardized_residuals = residuals / standard_deviations
+
+    expected_score = 0.5 * np.sum(
+        np.log(2.0 * np.pi)
+        + 2.0 * np.log(standard_deviations)
+        + standardized_residuals**2
+    )
+
+    assert result.success
+    assert result.rank == 2
+
+    # Compare in each coordinate's own scale so the small component matters.
+    np.testing.assert_allclose(
+        result.offset / scales,
+        expected_offset / scales,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        result.fun,
+        expected_score,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+
+# Build one coupled trajectory for checking changes of time units.
+@pytest.fixture
+def linear_time_rescaling_case():
+    model = LinearSDE(
+        drift=np.array([
+            [-0.7, 0.0],
+            [0.3, -1.0],
+        ]),
+        offset=np.array([0.4, -0.2]),
+        diffusion=np.diag([0.6, 0.5]),
+    )
+
+    times = np.concatenate((
+        [0.0],
+        np.cumsum(np.tile([0.25, 0.75], 40)),
+    ))
+
+    trajectory = linear_simulation.simulate_linear(
+        initial_state=State(
+            time=0.0,
+            values=np.array([[2.0], [-1.0]]),
+        ),
+        times=times,
+        model=model,
+        rng=np.random.default_rng(42),
+    )
+
+    return trajectory, model
+
+
+# Changing time units must preserve the conditional density of the states.
+@pytest.mark.parametrize("scale", [0.001, 1000.0])
+def test_linear_nll_respects_time_rescaling(
+    linear_time_rescaling_case,
+    scale,
+):
+    trajectory, model = linear_time_rescaling_case
+
+    scaled_trajectory = Trajectory(
+        times=trajectory.times * scale,
+        values=trajectory.values,
+    )
+    scaled_model = LinearSDE(
+        drift=model.drift / scale,
+        offset=model.offset / scale,
+        diffusion=model.diffusion / np.sqrt(scale),
+    )
+
+    original_score = linear_negative_log_likelihood(
+        trajectory=trajectory,
+        model=model,
+    )
+    scaled_score = linear_negative_log_likelihood(
+        trajectory=scaled_trajectory,
+        model=scaled_model,
+    )
+
+    np.testing.assert_allclose(
+        scaled_score,
+        original_score,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+
+
+# The estimated offset must transform as b_new = b / scale.
+@pytest.mark.parametrize("scale", [0.001, 1000.0])
+def test_fit_linear_offset_respects_time_rescaling(
+    linear_time_rescaling_case,
+    scale,
+):
+    trajectory, model = linear_time_rescaling_case
+
+    scaled_trajectory = Trajectory(
+        times=trajectory.times * scale,
+        values=trajectory.values,
+    )
+
+    original = fit_linear_offset(
+        trajectory=trajectory,
+        drift=model.drift,
+        diffusion=model.diffusion,
+    )
+    scaled = fit_linear_offset(
+        trajectory=scaled_trajectory,
+        drift=model.drift / scale,
+        diffusion=model.diffusion / np.sqrt(scale),
+    )
+
+    assert original.success
+    assert scaled.success
+    assert original.rank == scaled.rank
+
+    # Convert back to the original units before comparing.
+    np.testing.assert_allclose(
+        scaled.offset * scale,
+        original.offset,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        scaled.fun,
+        original.fun,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+
+
+# Drift fitting should recover equivalent candidates in different time units.
+@pytest.mark.parametrize("scale", [0.001, 1000.0])
+def test_fit_linear_drift_respects_time_rescaling(
+    linear_time_rescaling_case,
+    scale,
+):
+    trajectory, model = linear_time_rescaling_case
+
+    mask = np.array([
+        [True, False],
+        [True, True],
+    ])
+    initial_drift = np.array([
+        [-0.5, 0.0],
+        [0.1, -0.8],
+    ])
+
+    scaled_trajectory = Trajectory(
+        times=trajectory.times * scale,
+        values=trajectory.values,
+    )
+
+    original = fit_linear_drift(
+        trajectory=trajectory,
+        diffusion=model.diffusion,
+        drift_mask=mask,
+        initial_drift=initial_drift,
+        maxiter=150,
+    )
+    scaled = fit_linear_drift(
+        trajectory=scaled_trajectory,
+        diffusion=model.diffusion / np.sqrt(scale),
+        drift_mask=mask,
+        initial_drift=initial_drift / scale,
+        maxiter=150,
+    )
+
+    assert original.success, original.message
+    assert scaled.success, scaled.message
+
+    # Numerical optimization needs looser tolerances than direct evaluation.
+    np.testing.assert_allclose(
+        scaled.drift * scale,
+        original.drift,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        scaled.offset * scale,
+        original.offset,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        scaled.fun,
+        original.fun,
+        rtol=1e-8,
+        atol=1e-8,
+    )
+
+    # Changing units must not change the supplied structural restriction.
+    np.testing.assert_array_equal(
+        original.drift[~mask],
+        np.zeros(np.count_nonzero(~mask)),
+    )
+    np.testing.assert_array_equal(
+        scaled.drift[~mask],
+        np.zeros(np.count_nonzero(~mask)),
     )

@@ -210,7 +210,7 @@ Extend model expressiveness incrementally: static linear dynamics first, then ob
 | R3 | Noisy, asynchronous, and missing observations through a state-space model. |
 | R4 | Validated intervals, selection stability, calibration, and sensitivity evaluation. |
 
-Initial repeated-seed/duration validation and chronological prediction scoring are implemented. Long-horizon transition composition and per-evaluation factor reuse are also implemented and regression-tested. Remaining stage C work includes covariance-support checks, time-unit/no-edge validation, optional stability restrictions, and noise estimation; unknown scalar-node graphs, limited multi-feature inference, and R1 validation follow. Coupled simulation and scalar drift-to-graph conversion are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
+Initial repeated-seed/duration validation and chronological prediction scoring are implemented. Long-horizon transition composition and per-evaluation factor reuse are also implemented and regression-tested. Initial covariance-support, time-unit, and no-edge checks are complete. Remaining stage C work includes optional stability restrictions and diagonal-noise estimation; unknown scalar-node graphs, limited multi-feature inference, and R1 validation follow. Coupled simulation and scalar drift-to-graph conversion are implemented. Basic diagnostics and validation apply throughout; MCMC is not an early milestone.
 
 The [development execution plan](docs/DEVELOPMENT_PLAN.md) is the source of truth for stage dependencies, each file/function's responsibility, acceptance criteria, and deferred work. Its appendices contain the [mathematical reference](docs/DEVELOPMENT_PLAN.md#appendix-b-mathematical-and-modeling-reference) and [evaluation principles](docs/DEVELOPMENT_PLAN.md#appendix-c-evaluation-principles-across-releases). Planned APIs are explicitly distinguished from existing functionality.
 
@@ -218,8 +218,11 @@ The linear estimation experiment also fits on the first 140 of 201 observations 
 
 A [three-node offset-fitting benchmark](docs/EXPERIMENTS.md#7-linear-transition-robustness-and-offset-cache-benchmark) measured 8.48–9.04x speedup for repeated intervals and 1.56x for distinct intervals, with matching estimates and NLL differences around 1e-13. Distinct-interval caching increased traced allocation peaks; these measurements do not describe whole-project speedup or total process memory.
 
+An [independent-node control](docs/EXPERIMENTS.md#8-covariance-time-units-and-independent-node-control) fits unrestricted drift matrices to systems with no cross-node effects. All 20 attempts converged, yet fitted cross-node coefficients were nonzero; their RMSE decreased with longer observation duration in this run. Numerical convergence and nonzero coefficients do not establish supported edges. Sparse selection remains planned.
+
 ## Current Limitations
 
+- Simulation and marginal prediction allow positive-semidefinite, including singular, transition covariance. The current full-dimensional Gaussian likelihood and offset fitting require positive-definite covariance; rank-deficient diffusion can still produce positive-definite transition covariance through coupling. Near-singular reference checks do not guarantee accuracy for every ill-conditioned system.
 - Unknown-edge selection and calibrated parameter intervals are not implemented; masked linear parameter fitting is available. Automatic profile search is heuristic and budget-limited; unbounded joint optimization can still fail numerically.
 - Adjacency uses source-to-target indexing: `adjacency[i,j]` means i→j. Drift K[i,j] acts from j→i; conversion preserves this distinction.
 - Zero-volatility Brownian bridges currently interpolate even incompatible distinct endpoints. This behavior needs correction before release; use positive volatility for stochastic bridge examples.

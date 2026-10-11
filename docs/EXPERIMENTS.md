@@ -243,16 +243,16 @@ NLL at the generating parameters is **74.59130110**. The default fit has drift F
 
 ### Repeated seeds and observation durations
 
-**Evidence:** user execution on 2026-10-11, using the working experiment on top of v036 (`7fcbf32`). Saved CSV files were inspected for this update. The user reported 17 prediction-metric tests passing and subsequently reported the full suite passing, without a total count. This documentation update did not rerun the experiment or tests.
+**Evidence:** the initial prediction run was on working changes above v036 (`7fcbf32`). Current saved artifacts were refreshed by the user on 2026-10-11 after v038 (`79c5d3c`) with the independent-node extension. The reference/recovery values remain consistent at the displayed precision. The assistant inspected saved CSVs and verified the current full suite: 392 passed in 10.09 s. This documentation update did not rerun the full experiment.
 
-**Design:** preserve the seed-42 reference and add seeds 0–9 at durations 100 and 300, with alternating intervals 0.3/0.7. This gives 201 and 601 observations respectively. All 20 repeated fits use the default initialization, fixed generating B, the same supplied mask, and a 150-iteration limit. Paired seeds extend the same simulated path at the longer duration under the current simulator; comparisons across durations are therefore dependent. With the new training-only prediction fit, the complete script performs 24 fits when `RUN_RECOVERY=True`.
+**Design:** preserve the seed-42 reference and add seeds 0–9 at durations 100 and 300, with alternating intervals 0.3/0.7. This gives 201 and 601 observations respectively. All 20 repeated fits use the default initialization, fixed generating B, the same supplied mask, and a 150-iteration limit. Paired seeds extend the same simulated path at the longer duration under the current simulator; comparisons across durations are therefore dependent. The reference and prediction sections perform four fits; `RUN_RECOVERY=True` adds 20, and `RUN_NO_EDGE=True` adds another 20. With both flags enabled, the complete script performs 44 fits.
 
 Before fitting, `_check_summary` verifies hand-calculated mean/bias/RMSE, failure counting and exclusion, and unavailable statistics when no fit succeeds. These lightweight checks run inside the experiment; they are not additional pytest cases.
 
 | Duration | Observations | Attempts | Successful | Failed | Mean seconds per attempt |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 100 | 201 | 10 | 10 | 0 | 2.46 |
-| 300 | 601 | 10 | 10 | 0 | 7.91 |
+| 100 | 201 | 10 | 10 | 0 | 0.39 |
+| 300 | 601 | 10 | 10 | 0 | 1.02 |
 
 The following statistics use successful fits only; the denominator is 10 at each duration in this run. Bias is the mean signed error; RMSE is the square root of the mean squared error. Failed finite candidates remain in the raw records but are excluded from these accuracy statistics; an all-failed condition reports unavailable values, not zero error.
 
@@ -266,7 +266,7 @@ The following statistics use successful fits only; the denominator is 10 at each
 
 ![Parameter recovery across seeds and durations](../experiments/outputs/linear_estimation_recovery.png)
 
-**Interpretation:** all five empirical RMSEs decrease with longer observation duration in this run. The absolute empirical bias of k21 increases while its RMSE decreases: signed errors can cancel, so a small bias alone does not establish accurate individual estimates. Runtime is machine/load dependent; these two measurements do not establish general complexity. Total NLLs across different data lengths are not directly comparable as measures of fit quality.
+**Interpretation:** all five empirical RMSEs decrease with longer observation duration in this run. The absolute empirical bias of k21 increases while its RMSE decreases: signed errors can cancel, so a small bias alone does not establish accurate individual estimates. These timings are from the refreshed post-cache run. Runtime is machine/load dependent; comparison with earlier runs is not a controlled speed benchmark and does not establish general complexity. Total NLLs across different data lengths are not directly comparable as measures of fit quality.
 
 **Saved artifacts:**
 
@@ -275,7 +275,7 @@ The following statistics use successful fits only; the denominator is 10 at each
 - [Summary statistics](../experiments/outputs/linear_estimation_summary.csv): per-duration counts, bias, RMSE, and median errors.
 - [Reference figure](../experiments/outputs/linear_estimation.png) and [recovery figure](../experiments/outputs/linear_estimation_recovery.png).
 
-**Scope and next step:** this completes the initial repeated-seed/duration check for the known-structure baseline. Ten seeds do not establish estimator consistency, universal success, or calibrated intervals. The model is correctly specified, observations are complete/exact, B is known, and one forbidden coefficient is imposed by the mask. Unknown-edge selection, missing observations, and changing relationships are not evaluated. The optional-mask interface and initial prediction evaluation are now implemented. Retain the numerical review gates, time-unit/no-edge controls, and estimated-noise checks in the development plan.
+**Scope and next step:** this completes the initial repeated-seed/duration check for the known-structure baseline. Ten seeds do not establish estimator consistency, universal success, or calibrated intervals. The model is correctly specified, observations are complete/exact, B is known, and one forbidden coefficient is imposed by the mask. Unknown-edge selection, missing observations, and changing relationships are not evaluated. The optional-mask interface and initial prediction evaluation are now implemented. Initial time-unit and no-edge checks are now recorded in section 8. Retain the optional-stability and estimated-noise mathematical gates in the development plan.
 
 ### Chronological prediction validation
 
@@ -321,7 +321,7 @@ The shaded fixed-origin band is the per-node mean plus/minus 1.96 marginal proce
 - [Observed values, predicted means, and fixed-origin marginal variances](../experiments/outputs/linear_prediction_values.csv).
 - [Prediction figure](../experiments/outputs/linear_prediction.png).
 
-**Scope:** one correctly specified synthetic trajectory with complete exact observations, supplied structure, and fixed B. Beating persistence here does not establish general predictive superiority, uncertainty calibration, or that the cross-node coupling supplies the gain; an independent-node model comparison remains planned. Long-horizon/stiff numerical robustness remains subject to R1-00. Setting `RUN_RECOVERY=False` skips the 20 recovery fits but retains the reference and prediction experiments; existing recovery artifacts are not regenerated in that mode.
+**Scope:** one correctly specified synthetic trajectory with complete exact observations, supplied structure, and fixed B. Beating persistence here does not establish general predictive superiority, uncertainty calibration, or that the cross-node coupling supplies the gain; an independent-node model comparison remains planned. Long-horizon/stiff regression coverage is recorded in section 7; broader numerical robustness is not established by this plot. Setting `RUN_RECOVERY=False` skips the 20 recovery fits but retains the reference and prediction experiments; `RUN_NO_EDGE` independently controls the additional control experiment. Existing recovery artifacts are not regenerated when recovery is disabled.
 
 ## 7. Linear transition robustness and offset-cache benchmark
 
@@ -360,6 +360,41 @@ All three maximum absolute offset differences were zero in this run. Absolute NL
 **Measurement limits:** tracemalloc reports tracked allocation peaks, not total process RSS or all native-library workspace. Runtime depends on machine, library versions, threading and load; the run does not establish end-to-end drift-optimization speedup, large-node scaling, or the speed effect of the long-horizon fix. Exact binary schedules deliberately expose cache reuse; nominally equal decimal intervals obtained from timestamp subtraction may produce more unique keys. No minimum speedup is asserted in unit tests.
 
 **Artifacts:** [benchmark script](../experiments/experiment_linear_cache.py), [summary](../experiments/outputs/linear_cache_summary.csv), [individual measurements](../experiments/outputs/linear_cache_measurements.csv), and [figure](../experiments/outputs/linear_cache.png).
+
+## 8. Covariance, time units, and independent-node control
+
+**Evidence (2026-10-11):** working tests and experiment changes on v038 (`79c5d3c`). The user completed the extended experiment and generated all four figures. Saved control records were inspected for this update. Assistant verification: `.venv/bin/python -m pytest -q` completed with **392 passed in 10.09 s**; the experiment was not rerun for this documentation change.
+
+### Covariance support and time-unit checks
+
+Simulation and marginal prediction support positive-semidefinite (including singular) process covariance Q. The current ordinary full-dimensional Gaussian likelihood and fixed-K offset fit require positive-definite Q for Cholesky factorization. This requirement concerns Q, not the rank of B alone: drift coupling can spread a lower-dimensional noise input into a positive-definite finite-time covariance. Degenerate Gaussian density evaluation is not implemented.
+
+Four new near-singular cases use K=0 and B=diag(1, epsilon), with epsilon=1e-3 or 1e-6. Conditional NLL and fitted offsets agree with independent scalar-normal references, without covariance jitter. These controlled diagonal cases do not establish general robustness for every ill-conditioned matrix or calibration of uncertainty.
+
+Six time-rescaling cases cover conditional NLL, fixed-K offset fitting, and masked drift fitting at scales c=0.001 and c=1000. For t_new=c*t, transform K_new=K/c, b_new=b/c, and B_new=B/sqrt(c), leaving state observations unchanged. Drift optimization uses transformed explicit starting points. Compare fitted coefficients in original units and use appropriate optimization tolerances. These checks do not imply global optima or identical optimizer behavior for arbitrary scales/data.
+
+### Independent-node control
+
+Run `python -m experiments.experiment_linear_estimation` with `RUN_NO_EDGE=True`. The generating model has K=diag(-0.7,-1.0), b=[0.4,-0.2], B=diag(0.6,0.5), and fixed initial state [2,-1]. Both drift coupling and shared noise are absent. Use seeds 0–9, alternating intervals 0.3/0.7, and durations 100/300 (201/601 observations). The fit receives `mask=None`, allowing all four drift entries, with supplied generating B, default initialization, profiled b, and at most 150 Powell iterations. The generating zero cross-node coefficients are not imposed on the fit.
+
+`_run_no_edge_experiment` records every attempt, including numerical failures and failed finite candidates. `_summarize_no_edge_runs` reports successful-fit statistics with attempt/success/failure counts; an all-failed group has unavailable errors. `_plot_no_edge_runs` shows both cross-node coefficients and failure counts. This extension reuses `_simulate_case`, `_fit_case`, and `_write_csv`; it adds no estimator or edge-selection rule.
+
+All 20 fits report optimizer success: 10 of 10 at each duration. Each row below summarizes those same ten successful fits for one coefficient, not another set of ten attempts. Drift k12 acts from node 2 to node 1; k21 acts from node 1 to node 2.
+
+| Duration | Coefficient | Mean | RMSE | Mean absolute | Maximum absolute |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 100 | k12 | 0.051031 | 0.222673 | 0.199752 | 0.365663 |
+| 100 | k21 | -0.052604 | 0.144897 | 0.095796 | 0.397100 |
+| 300 | k12 | 0.044711 | 0.138281 | 0.115335 | 0.280807 |
+| 300 | k21 | 0.000085 | 0.054839 | 0.039352 | 0.124000 |
+
+![Independent-node control with unrestricted drift fitting](../experiments/outputs/linear_no_edge.png)
+
+**Interpretation:** unrestricted estimates are nonzero despite zero generating cross-node effects. Both empirical RMSEs decrease at the longer duration in this run, but individual errors remain. Near-zero signed averages can hide cancellation: at duration 300, k21 has mean 0.000085 but RMSE 0.054839. Successful optimization is not evidence of a supported relationship. No threshold, false-positive rate, p-value, confidence interval, or reliable edge selection is derived from these ten seeds. Paired seeds extend the same simulated paths across durations, so the two duration samples are dependent. Fixed generating B and correctly specified, exact complete observations limit generalization.
+
+**Artifacts:** [all control attempts](../experiments/outputs/linear_no_edge_runs.csv), [control summary](../experiments/outputs/linear_no_edge_summary.csv), and [figure](../experiments/outputs/linear_no_edge.png).
+
+**Status:** initial R1-00 covariance-support checks and R1-04 time-unit/no-edge validation are complete. Record and commit this checkpoint before beginning R1-05 unknown diagonal diffusion. The optional stability-constraint decision remains a separate mathematical gate before sparse selection.
 
 ## Updating this record
 
