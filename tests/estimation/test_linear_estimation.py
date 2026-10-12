@@ -1218,3 +1218,333 @@ def test_fit_linear_drift_respects_time_rescaling(
         scaled.drift[~mask],
         np.zeros(np.count_nonzero(~mask)),
     )
+
+# Prepare complete two-node observations for candidate-profile tests.
+@pytest.fixture
+def diagonal_profile_trajectory():
+    return Trajectory(
+        times=np.array([0.0, 0.25, 0.75, 1.5]),
+        values=np.array([
+            [1.0, -0.5],
+            [1.2, -0.3],
+            [0.9, 0.1],
+            [1.4, -0.2],
+        ])[:, :, None],
+    )
+
+
+# A coupled candidate must match the existing fixed-diffusion fitting path.
+def test_diagonal_profile_matches_fixed_diffusion(
+    diagonal_profile_trajectory,
+):
+    trajectory = diagonal_profile_trajectory
+
+    drift = np.array([
+        [-0.7, 0.0],
+        [0.3, -1.0],
+    ])
+    volatility = np.array([0.6, 1.4])
+    log_volatility = np.log(volatility)
+
+    original_logs = log_volatility.copy()
+    original_drift = drift.copy()
+
+    actual = linear_estimation._profile_linear_diagonal_diffusion(
+        trajectory=trajectory,
+        drift=drift,
+        log_volatility=log_volatility,
+    )
+    expected = fit_linear_offset(
+        trajectory=trajectory,
+        drift=drift,
+        diffusion=np.diag(volatility),
+    )
+
+    assert actual.success
+
+    np.testing.assert_allclose(
+        actual.model.diffusion,
+        np.diag(volatility),
+        rtol=1e-14,
+        atol=0.0,
+    )
+    np.testing.assert_array_equal(
+        actual.model.drift,
+        drift,
+    )
+    np.testing.assert_allclose(
+        actual.offset,
+        expected.offset,
+        rtol=1e-11,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        actual.fun,
+        expected.fun,
+        rtol=1e-11,
+        atol=1e-12,
+    )
+
+    # The result's x still represents b, not the candidate log scales.
+    np.testing.assert_array_equal(actual.x, actual.offset)
+
+    # Evaluating a candidate must not modify caller-owned arrays.
+    np.testing.assert_array_equal(log_volatility, original_logs)
+    np.testing.assert_array_equal(drift, original_drift)
+
+
+# With K=0, compare both b and NLL against independent scalar formulas.
+def test_diagonal_profile_matches_brownian_reference(
+    diagonal_profile_trajectory,
+):
+    trajectory = diagonal_profile_trajectory
+    values = trajectory.values[:, :, 0]
+    intervals = np.diff(trajectory.times)
+
+    volatility = np.array([0.6, 0.4])
+
+    result = linear_estimation._profile_linear_diagonal_diffusion(
+        trajectory=trajectory,
+        drift=np.zeros((2, 2)),
+        log_volatility=np.log(volatility),
+    )
+
+    duration = trajectory.times[-1] - trajectory.times[0]
+    expected_offset = (values[-1] - values[0]) / duration
+
+    residuals = (
+        np.diff(values, axis=0)
+        - intervals[:, None] * expected_offset[None, :]
+    )
+    variances = (
+        intervals[:, None] * volatility[None, :]**2
+    )
+
+    expected_score = 0.5 * np.sum(
+        np.log(2.0 * np.pi)
+        + np.log(variances)
+        + residuals**2 / variances
+    )
+
+    np.testing.assert_allclose(
+        result.offset,
+        expected_offset,
+        rtol=1e-11,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        result.fun,
+        expected_score,
+        rtol=1e-11,
+        atol=1e-12,
+    )
+
+
+# Require one log diffusion scale per node in a one-dimensional array.
+@pytest.mark.parametrize(
+    "log_volatility",
+    [
+        np.array(0.0),
+        np.array([0.0]),
+        np.array([0.0, 0.0, 0.0]),
+        np.array([[0.0], [0.0]]),
+    ],
+    ids=["scalar", "too-short", "too-long", "column-matrix"],
+)
+def test_diagonal_profile_rejects_invalid_shape(
+    diagonal_profile_trajectory,
+    log_volatility,
+):
+    with pytest.raises(ValueError, match="must have shape"):
+        linear_estimation._profile_linear_diagonal_diffusion(
+            trajectory=diagonal_profile_trajectory,
+            drift=-np.eye(2),
+            log_volatility=log_volatility,
+        )
+
+
+# Non-finite log parameters are invalid inputs.
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+def test_diagonal_profile_rejects_nonfinite_logs(
+    diagonal_profile_trajectory,
+    bad_value,
+):
+    with pytest.raises(ValueError, match="only finite values"):
+        linear_estimation._profile_linear_diagonal_diffusion(
+            trajectory=diagonal_profile_trajectory,
+            drift=-np.eye(2),
+            log_volatility=np.array([0.0, bad_value]),
+        )
+
+
+# Finite log parameters can still produce unrepresentable diffusion scales.
+@pytest.mark.parametrize(
+    "log_value, message",
+    [
+        (1000.0, "non-finite after exponentiation"),
+        (-1000.0, "underflowed to zero"),
+    ],
+    ids=["exponential-overflow", "exponential-underflow"],
+)
+def test_diagonal_profile_rejects_unrepresentable_scales(
+    diagonal_profile_trajectory,
+    log_value,
+    message,
+):
+    with pytest.raises(FloatingPointError, match=message):
+        linear_estimation._profile_linear_diagonal_diffusion(
+            trajectory=diagonal_profile_trajectory,
+            drift=-np.eye(2),
+            log_volatility=np.array([0.0, log_value]),
+        )
+
+
+# Two intervals with manually calculable noise starting scales.
+@pytest.fixture
+def volatility_initialization_trajectory():
+    return Trajectory(
+        times=np.array([0.0, 1.0, 5.0]),
+        values=np.array([
+            [0.0, 0.0],
+            [2.0, -1.0],
+            [4.0, 7.0],
+        ])[:, :, None],
+    )
+
+
+# Check arithmetic, output shape, and preservation of the input arrays.
+def test_initial_linear_volatility_matches_hand_calculation(
+    volatility_initialization_trajectory,
+):
+    trajectory = volatility_initialization_trajectory
+    original_times = trajectory.times.copy()
+    original_values = trajectory.values.copy()
+
+    actual = linear_estimation._initial_linear_volatility(
+        trajectory=trajectory,
+    )
+
+    # Normalized increments are [2, 1] and [-1, 4].
+    expected = np.sqrt(np.array([2.5, 8.5]))
+
+    assert actual.shape == (2,)
+    assert actual.dtype == np.float64
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=0.0)
+    np.testing.assert_array_equal(trajectory.times, original_times)
+    np.testing.assert_array_equal(trajectory.values, original_values)
+
+
+# Changing time units by c must change diffusion scales by 1/sqrt(c).
+@pytest.mark.parametrize("scale", [0.001, 1000.0])
+def test_initial_linear_volatility_respects_time_rescaling(
+    volatility_initialization_trajectory,
+    scale,
+):
+    trajectory = volatility_initialization_trajectory
+    rescaled = Trajectory(
+        times=trajectory.times * scale,
+        values=trajectory.values,
+    )
+
+    actual = linear_estimation._initial_linear_volatility(
+        trajectory=rescaled,
+    )
+    expected = np.sqrt(np.array([2.5, 8.5])) / np.sqrt(scale)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=0.0)
+
+
+# A representable RMS must survive values whose direct squares overflow
+# or underflow.
+@pytest.mark.parametrize("amplitude", [1e200, 1e-200])
+def test_initial_linear_volatility_handles_extreme_scales(amplitude):
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0, 2.0]),
+        values=np.array([0.0, amplitude, 0.0])[:, None, None],
+    )
+
+    actual = linear_estimation._initial_linear_volatility(
+        trajectory=trajectory,
+    )
+
+    # Increments are +amplitude and -amplitude, so RMS is amplitude.
+    np.testing.assert_allclose(
+        actual / amplitude,
+        np.ones(1),
+        rtol=1e-14,
+        atol=0.0,
+    )
+
+
+# Reject data layouts unsupported by this initialization helper.
+@pytest.mark.parametrize(
+    "shape, message",
+    [
+        ((1, 2, 1), "at least two time steps"),
+        ((2, 0, 1), "at least one node"),
+        ((2, 2, 2), "one feature per node"),
+    ],
+    ids=["single-time", "no-nodes", "multiple-features"],
+)
+def test_initial_linear_volatility_rejects_unsupported_layout(
+    shape,
+    message,
+):
+    trajectory = Trajectory(
+        times=np.arange(shape[0], dtype=np.float64),
+        values=np.zeros(shape),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        linear_estimation._initial_linear_volatility(trajectory=trajectory)
+
+
+# One constant node is sufficient to make automatic initialization fail.
+def test_initial_linear_volatility_rejects_constant_node():
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0, 2.0]),
+        values=np.array([
+            [0.0, 5.0],
+            [1.0, 5.0],
+            [3.0, 5.0],
+        ])[:, :, None],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="explicit positive initial volatility",
+    ):
+        linear_estimation._initial_linear_volatility(trajectory=trajectory)
+
+
+# Recheck arrays that were changed after Trajectory construction.
+@pytest.mark.parametrize("field", ["times", "values"])
+def test_initial_linear_volatility_revalidates_mutated_input(
+    volatility_initialization_trajectory,
+    field,
+):
+    trajectory = volatility_initialization_trajectory
+
+    if field == "times":
+        trajectory.times[1] = np.nan
+    else:
+        trajectory.values[1, 0, 0] = np.nan
+
+    with pytest.raises(ValueError, match="finite"):
+        linear_estimation._initial_linear_volatility(trajectory=trajectory)
+
+
+# Finite observations can still yield an overflowing subtraction.
+def test_initial_linear_volatility_rejects_increment_overflow():
+    largest = np.finfo(np.float64).max
+    trajectory = Trajectory(
+        times=np.array([0.0, 1.0]),
+        values=np.array([-largest, largest])[:, None, None],
+    )
+
+    with pytest.raises(
+        FloatingPointError,
+        match="time-normalized increments must be finite",
+    ):
+        linear_estimation._initial_linear_volatility(trajectory=trajectory)

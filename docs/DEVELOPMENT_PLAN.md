@@ -53,6 +53,9 @@ Schedule verifiable work units rather than rigid day counts: C likelihood and kn
 
 ### Product scope and deferred extensions
 
+**Severe-noise requirement (2026-10-12):** Treat severe process and measurement noise as explicit validation targets. Appendix G defines the mathematical limits and stage gates. R1 adds noise stress tests and a bounded known-measurement-noise pilot before claiming noisy-data edge recovery; R2 requires noise-only-change controls; full noisy/missing/asynchronous inference remains R3. Current exact-observation interfaces remain reference implementations.
+
+
 **Scope clarification (2026-10-08):** the product extracts and compares numerical relationship descriptors rather than assigning semantic categories or discovering a universal underlying rule. The existing linear SDE is the first estimator. Preserve A–E and R1–R4 dependencies; do not restart or replace validated code. Graphs are selected views of the descriptors. Direct drift, finite-horizon response, and noise covariance rate keep distinct meanings; available numerical objects do not imply every relationship is identifiable.
 
 **2026-10-10 review update:** Appendix F R1-00 inserts the long-horizon numerical fix and per-evaluation caching before the next expanded benchmark; optional stability restrictions follow the unconstrained baseline gates.
@@ -470,6 +473,7 @@ Current checkpoint: v038 (`79c5d3c`) plus working covariance/time-unit tests and
 
 | Date | Task | Status/evidence | Next step |
 | --- | --- | --- | --- |
+| 2026-10-12 | Severe-noise scope and mathematical limits | Documentation only: added Appendix G, with noise taxonomy, innovation likelihood, identifiability examples, staged validation and evidence-insufficiency criteria. No noise-aware estimator is implemented by this change. | R1 stress tests first; bounded known-R pilot before noisy-data selection claims; preserve R2/R3/R4 responsibilities. |
 | 2026-10-11 | Covariance support, time units, and no-edge control | Four near-singular and six time-rescaling cases added; assistant full suite: 392 passed in 10.09 s. User experiment: all 20 unrestricted no-edge fits succeeded, with nonzero cross-node estimates and lower RMSE at longer duration. Outputs inspected; no threshold or false-positive rate inferred. | Document and commit this checkpoint, then discuss R1-05 diagonal-noise estimation. Optional stability remains gated before sparse selection. |
 | 2026-10-11 | Long-horizon transitions and offset-cache reuse | Working changes on v037; six long-horizon and eight cache cases added. Assistant full-suite verification: 382 passed in 8.42 s. User benchmark and saved CSVs: 8.48x/9.04x/1.56x speedup, zero offset differences and NLL differences around 1e-13. | R1-00 items 1–2 initially validated. Audit covariance support, then units/no-edge controls; optional stability and diagonal-noise gates remain. |
 | 2026-10-11 | Prediction metrics and chronological validation | Working `prediction_metrics`, 17 metric cases reported passing; user also reports full-suite success without a total count. Experiment: 140 training/61 validation observations; fixed-origin RMSE 0.407586 vs persistence 0.422322, one-step 0.309048 vs 0.353830. Saved CSVs inspected; documentation update did not rerun tests. | Initial C3 complete. Retain R1-00 transition/caching gates, then C4 units/no-edge controls and remaining C work. |
@@ -952,3 +956,73 @@ Reason for insertion: reproduced numerical failures and measured duplicated matr
 - Gate: record release evidence and unresolved limitations. R1 excludes dynamic graph estimation, generic missing-data inference, calibrated relationship intervals, a standalone GUI, and universal semantic labels.
 
 No exact file/function total is a completion metric: many entries modify existing functions, some properties are not functions, and mathematical gates can revise helper structure. This checklist is the complete current R1 scope; any addition or removal requires updating it explicitly. R1-00 items 1–2 now have initial implementation and validation evidence. Initial item 4 covariance-support checks and C4 time-unit/no-edge controls are also complete. Record and commit the current evidence, then begin the C5/R1-05 diagonal-noise mathematical gate; discuss item 3 stability constraints before sparse selection.
+
+
+## Appendix G. Severe Noise: Mathematical Scope and Development Gates
+
+Added 2026-10-12 at the user's request. Severe noise is a required evaluation scenario, not a promise that arbitrary noise can be removed. This appendix is a development specification; the existing exact-observation likelihood does not yet implement the measurement model below.
+
+### G1. Separate the sources of uncertainty
+
+- Process noise changes the latent state itself: dX = (KX+b)dt + B dW. Its covariance rate is D=BB^T; it is not a graph of drift relationships.
+- Measurement noise changes recorded observations: y_k = H_k x_k + epsilon_k, with covariance R_k. Initially assume independent Gaussian errors over time, independent of process noise, H_k=I, and known constant diagonal R.
+- Outliers, heavy tails, temporal correlation and sensor drift violate that initial observation model. Evaluate them as misspecification cases first; robust/heavy-tailed or augmented-state models are separate extensions.
+- Define signal/noise ratios with units and a declared reference covariance. For a stable stationary system one candidate is trace(P_stationary)/trace(R); also report per-channel ratios and temporal correlations. For unstable/nonstationary systems use a declared finite horizon. Large absolute B alone does not establish poor drift identifiability: it also changes state excitation.
+
+### G2. The initial noise-aware likelihood
+
+Reuse exact interval-dependent transitions:
+
+```math
+x_{k+1}=F_kx_k+c_k+\eta_k,\quad \eta_k\sim N(0,Q_k),
+\qquad y_k=H_kx_k+\epsilon_k,\quad \epsilon_k\sim N(0,R_k).
+```
+
+For specified parameters and a declared Gaussian initial distribution, the Kalman filter gives the exact Gaussian innovation likelihood:
+
+```math
+v_k=y_k-H_km_k^-,\qquad S_k=H_kP_k^-H_k^T+R_k,
+\qquad
+-\log p(y)=\frac12\sum_k\left[m_k^{\rm obs}\log(2\pi)
++\log\det S_k+v_k^TS_k^{-1}v_k\right].
+```
+
+Here m_k^{obs} denotes the number of observed components, not the state mean. Use Cholesky solves, not explicit inverses, and require positive-definite innovation covariance for this ordinary density. A singular process Q need not make S singular. Validate covariance updates with a numerically stable formulation. Missing/asynchronous H_k belongs to the later R3 extension, not the first pilot.
+
+Exact filtering under fixed correct parameters does not guarantee identifiable parameters, a global likelihood optimum, or accurate graph selection. Do not initialize the latent state as exactly equal to the first noisy observation; declare an initial prior, an independently known state, or a justified stationary/diffuse initialization. Do not smooth once and fit the smoothed series as error-free observations. Conditional state intervals omit fitted-parameter and selection uncertainty.
+
+### G3. What can and cannot be recovered
+
+A scalar example makes the information requirement explicit. For a stationary regularly sampled OU process with alpha>0 and sigma>0, independent zero-mean measurement errors of variance r, define a=exp(-alpha*Delta) and V=sigma^2/(2*alpha). Population observation autocovariances obey:
+
+```math
+\gamma_0=V+r,\qquad \gamma_1=Va,\qquad \gamma_2=Va^2.
+```
+
+When these assumptions hold and gamma_1>0, population quantities identify a=gamma_2/gamma_1, V=gamma_1/a, and r=gamma_0-V. This illustrates theoretical separability, not a proposed finite-sample estimator: under severe measurement noise or fast decay, empirical lag covariances can be too uncertain for these ratios to be useful. If observations carry essentially no resolved temporal correlation, process and measurement contributions can be practically indistinguishable. Even simple linear Gaussian state-space models exhibit this problem [2].
+
+For independent measurement errors, Var(epsilon_{k+1}-epsilon_k)=2R while process increment covariance is approximately D*Delta for small Delta. Adjacent differenced errors are themselves correlated (covariance -R). Consequently, naively treating noisy differences as independent process increments is invalid. More dense samples may help a correctly specified estimator, but are not equivalent to a longer observation horizon or independent replicated trajectories.
+
+For multivariate K, full-state observation does not alone establish parameter identifiability. Require informative excitation, a suitable observation horizon, restricted noise structure and sampling that resolves the relevant dynamics. Regularly sampled exp(K*Delta) can admit multiple continuous-time generators; irregular times can help but do not guarantee uniqueness. Sparse penalties and stability restrictions impose assumptions rather than create missing information. A nearly flat profile or sensitivity across equally plausible models must be reported as insufficient evidence, not a confirmed absent edge.
+
+Possible sources of additional information: sensor calibration or independent replicate measurements of the same latent state, longer runs, independent trajectories, justified structural restrictions, and observed external inputs. Replication reduces only independent measurement error; common bias does not average away.
+
+### G4. Release allocation and execution order
+
+1. **R1: required stress tests.** Extend existing static known-truth experiments with a recorded noise generator. Vary process noise separately from measurement noise; preserve comparable signal scales when interpreting effects. Include independent nodes, a directed chain, and shared process-noise controls. Compare the current exact-observation fit with an oracle fit to latent states; record parameter error, false/missed edges when selection exists, prediction error/NLL, failures and runtime. Before selection exists, report null-coefficient distributions rather than claiming edge error rates.
+2. **Bounded early measurement-noise pilot, after the current numerical/performance baseline and before noisy-data sparse-selection claims.** First validate filtering and innovation likelihood for fixed K,b,B and known R on complete synchronous scalar-node observations. Then estimate masked K,b with B,R fixed. Use a scalar OU reference and an independently assembled joint Gaussian observation density to verify likelihoods. Compare known initial state versus declared Gaussian-prior initialization. Keep exact-observation APIs intact and do not silently route noisy data through Trajectory as latent truth. Choose a minimal observation-data contract at implementation time.
+3. **R1 acceptance distinction.** The exact-observation R1 reference remains useful. Before claiming R1 supports severe measurement noise, the pilot must have repeated-seed evidence and its assumptions must be documented. If it fails its information or computation gates, report the unsupported regime explicitly; do not declare the noise requirement solved. Broader unknown-R and robust-noise support stays R3.
+4. **R2: distinguish dynamics changes from noise changes.** Evaluate unchanged K with changing D or R, as well as genuine K changes. A detector using a constant-noise model must document this limitation. Report false changes, detection delay and failures; do not interpret every residual increase as a relationship change.
+5. **R3: broaden observation inference.** Extend the validated static pilot to missing/asynchronous data, then limited unknown diagonal R, releasing process and measurement parameters separately. Diagnose confounding and boundaries before joint fitting. Add correlated/heavy-tailed observation models only after controlled misspecification evidence justifies the added assumptions and cost.
+6. **R4: calibrate reliability.** Measure interval coverage and selection stability through full-pipeline simulations/resampling, distinguishing fixed-parameter state intervals from parameter and post-selection uncertainty. No universal recoverable noise threshold or calibrated confidence claim before validation.
+
+### G5. Acceptance evidence and honest failure reporting
+
+Predeclare noise grids, graph strengths, durations, sampling intervals, seeds and computational budgets. Fit and tune on training/validation data only. Report distributions and failed/timeout runs, not only favorable examples. Test independent and shared noise, wrong supplied R, and a modest contamination scenario. Keep latent-state recovery, observation prediction and graph recovery as separate outcomes.
+
+Known-parameter linear Gaussian posterior means provide an attainable model-based state-estimation reference. They do not promise near-zero error under arbitrarily large measurement noise. Validate the zero-measurement-noise limit against the existing likelihood only with matched initial conditioning and nonsingular relevant covariances. Include deliberately weak-information cases and document uncertainty/sensitivity rather than forcing a precise graph. Thresholds for acceptable false-edge rates, prediction gains and runtime must be selected before inspecting benchmark outcomes; no numeric performance promise is made here.
+
+### References
+
+1. [Statsmodels: Time Series Analysis by State Space Methods](https://www.statsmodels.org/stable/statespace.html). Implementation reference for Kalman-filter likelihoods, not evidence that our estimator is validated.
+2. [Auger-Methe et al. (2016), State-space models' dirty little secrets: even simple linear Gaussian models can have estimation problems](https://pmc.ncbi.nlm.nih.gov/articles/PMC4879567/). Evidence motivating explicit identifiability and finite-sample checks.

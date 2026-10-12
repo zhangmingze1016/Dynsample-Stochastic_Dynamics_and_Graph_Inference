@@ -466,3 +466,140 @@ def fit_linear_drift(
         last_invalid_reason=last_invalid_reason,
         optimizer_result=optimizer_result,
     )
+
+# Profile out b for a candidate K and positive diagonal diffusion.
+def _profile_linear_diagonal_diffusion(
+    trajectory: Trajectory,
+    drift: NDArray[np.float64],
+    log_volatility: NDArray[np.float64],
+) -> OptimizeResult:
+    """Fit b and score a candidate K and log diffusion scales.
+
+    K and diffusion scales are supplied candidates, not optimized here.
+    The returned x and offset contain the fitted b.
+    """
+    n = trajectory.n_nodes
+
+    # Own the candidate array and use a consistent numeric type.
+    log_volatility = np.array(
+        log_volatility,
+        dtype=np.float64,
+        copy=True,
+    )
+
+    if log_volatility.shape != (n,):
+        raise ValueError(
+            "log_volatility must have shape (n_nodes,)"
+        )
+
+    if not np.all(np.isfinite(log_volatility)):
+        raise ValueError(
+            "log_volatility must contain only finite values"
+        )
+
+    # Convert unconstrained log scales into positive diffusion scales.
+    with np.errstate(
+        over="ignore",
+        under="ignore",
+        invalid="ignore",
+    ):
+        volatility = np.exp(log_volatility)
+
+    if not np.all(np.isfinite(volatility)):
+        raise FloatingPointError(
+            "diffusion scales became non-finite after exponentiation"
+        )
+
+    if np.any(volatility <= 0.0):
+        raise FloatingPointError(
+            "diffusion scales underflowed to zero"
+        )
+
+    # Independent instantaneous noise sources, one per node.
+    diffusion = np.diag(volatility)
+
+    # Reuse validated weighted least squares and its cached likelihood.
+    fitted = fit_linear_offset(
+        trajectory=trajectory,
+        drift=drift,
+        diffusion=diffusion,
+    )
+
+    return fitted
+
+# Estimate positive starting diffusion scales from observed increments.
+def _initial_linear_volatility(
+        trajectory: Trajectory,
+) -> NDArray[np.float64]:
+    """Return one positive starting diffusion scale per node.
+
+    This is an initialization heuristic, not a fitted noise estimate.
+    Each node must have one feature and at least one nonzero increment.
+    """
+
+    checked = Trajectory(
+        times = trajectory.times,
+        values = trajectory.values,
+    )
+
+    if checked.n_steps < 2:
+        raise ValueError(
+            "trajectory must contain at least two time steps"
+        )
+
+    if checked.n_nodes == 0:
+        raise ValueError(
+            "trajectory must contain at least one node"
+        )
+
+    if checked.n_features != 1:
+        raise ValueError(
+            "trajectory must contain one feature per node"
+        )
+
+    intervals = np.diff(checked.times)
+    values = checked.values[:, :, 0]
+
+    # Normalize each increment by the square root of its time interval.
+    with np.errstate(
+        over = "ignore",
+        under = "ignore",
+        divide = "ignore",
+        invalid = "ignore",
+    ):
+        increments = np.diff(values, axis = 0)
+        scaled_increments = increments / np.sqrt(intervals)[:, None]
+
+    if not np.all(np.isfinite(scaled_increments)):
+        raise FloatingPointError(
+            "time-normalized increments must be finite"
+        )
+
+    # Scale each column before squaring to avoid unnecessary overflow.
+    scales = np.max(np.abs(scaled_increments), axis = 0)
+
+    if np.any(scales == 0.0):
+        raise ValueError(
+            "cannot infer positive initial volatility for a node "
+            "with zero time-normalized increments; "
+            "an explicit positive initial volatility is required"
+        )
+
+    with np.errstate(under = "ignore"):
+        normalized =scaled_increments / scales
+        volatility = scales * np.sqrt(
+            np.mean(normalized**2, axis = 0)
+        )
+
+
+    if not np.all(np.isfinite(volatility)):
+        raise FloatingPointError(
+            "initial volatility must be finite"
+        )
+
+    if np.any(volatility <= 0.0):
+        raise FloatingPointError(
+            "initial volatility underflowed to zero"
+        )
+
+    return volatility
